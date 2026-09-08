@@ -1,0 +1,24 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.5.2.0
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GpxApi", "GpxApi\GpxApi.csproj", "{FEA8753D-DFF2-729F-908A-EC104442ADD5}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{FEA8753D-DFF2-729F-908A-EC104442ADD5}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{FEA8753D-DFF2-729F-908A-EC104442ADD5}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{FEA8753D-DFF2-729F-908A-EC104442ADD5}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{FEA8753D-DFF2-729F-908A-EC104442ADD5}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {A203DA08-84D0-47AA-BF90-9E5898EE86DE}
+	EndGlobalSection
+EndGlobal

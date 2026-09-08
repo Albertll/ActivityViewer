@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mapa GPX</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+    <style>
+        #map { height: 80vh; width: 100%; }
+        body { font-family: Arial, sans-serif; margin: 0; padding: 0; }
+        .controls { margin: 1em; }
+    </style>
+</head>
+<body>
+    <nav style="background:#222; color:#fff; padding:0.7em 1em; display:flex; gap:1.5em; align-items:center;">
+      <a href="index.html" style="color:#fff; text-decoration:none; font-weight:bold;">Mapa GPX</a>
+      <a href="trasy.html" style="color:#fff; text-decoration:none;">Lista tras</a>
+      <a href="strava.html" style="color:#fff; text-decoration:none;">Strava</a>
+      <a href="intervals.html" style="color:#fff; text-decoration:none;">Interwały</a>
+      <span id="userInfo" style="margin-left:auto; font-size:0.9em;"></span>
+      <a id="logoutBtn" href="/auth/logout" style="color:#ff6b6b; text-decoration:none; font-size:0.9em; display:none;">Wyloguj</a>
+    </nav>
+    <div class="controls" style="margin:1em;">
+        <label><b>Filtr tras:</b></label>
+        <button id="filterAllBtn">Wszystkie</button>
+        <button id="filterBikeBtn">Rowerowe</button>
+        <button id="filterRunBtn">Biegowe/Spacerowe</button>
+    </div>
+    <div style="display: flex; height: 100vh;">
+        <div id="sidebar" style="width: 260px; min-width: 180px; max-width: 350px; background: #f7f7f7; border-right: 1px solid #ccc; overflow-y: auto; padding: 1em 0 1em 0;">
+            <div style="padding: 0 1em 1em 1em; font-weight: bold;">Pliki GPX z serwera:</div>
+            <ul id="gpxList" style="list-style:none; margin:0; padding:0;"></ul>
+            <button id="showAllBtn" style="margin:1em; width:calc(100% - 2em);">Pokaż wszystkie trasy</button>
+        </div>
+        <div style="flex:1; display:flex; flex-direction:column; min-width:0;">
+            <div id="map" style="flex:1 1 auto;"></div>
+            <div id="gpxInfo" style="margin:1em; font-family:monospace;"></div>
+        </div>
+    </div>
+    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+    <script src="leaflet-gpx.js"></script>
+    <script src="main.js"></script>
+</body>
+</html>

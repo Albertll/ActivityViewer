@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Lista tras GPX</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@2.2.2"></script>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; padding: 0; }
+        h1 { margin: 1em; }
+        table { border-collapse: collapse; width: 98%; margin: 1em auto; background: #fff; }
+        th, td { border: 1px solid #ccc; padding: 0.5em 0.7em; text-align: left; }
+        th { background: #f0f0f0; cursor: pointer; user-select: none; }
+        tr:hover { background: #e6f2ff; }
+        .map-modal-bg { position: fixed; left:0; top:0; width:100vw; height:100vh; background:rgba(0,0,0,0.4); z-index:1000; display:flex; align-items:center; justify-content:center; }
+        .map-modal { background:#fff; border-radius:8px; box-shadow:0 2px 16px #0003; padding:0; min-width:350px; min-height:350px; max-width:90vw; max-height:90vh; display:flex; flex-direction:column; }
+        .map-modal-wide { min-width:900px !important; min-height:480px !important; max-width:98vw; max-height:98vh; }
+        .map-modal-header { padding:0.5em 1em; border-bottom:1px solid #ddd; font-weight:bold; display:flex; justify-content:space-between; align-items:center; }
+        .map-modal-close { cursor:pointer; font-size:1.3em; }
+        #modalMap { flex:1 1 auto; min-height:300px; min-width:300px; }
+    </style>
+</head>
+<body>
+    <nav style="background:#222; color:#fff; padding:0.7em 1em; display:flex; gap:1.5em; align-items:center;">
+      <a href="index.html" style="color:#fff; text-decoration:none; font-weight:bold;">Mapa GPX</a>
+      <a href="trasy.html" style="color:#fff; text-decoration:none;">Lista tras</a>
+      <a href="strava.html" style="color:#fff; text-decoration:none;">Strava</a>
+      <a href="intervals.html" style="color:#fff; text-decoration:none;">Interwały</a>
+      <span id="userInfo" style="margin-left:auto; font-size:0.9em;"></span>
+      <a id="logoutBtn" href="/auth/logout" style="color:#ff6b6b; text-decoration:none; font-size:0.9em; display:none;">Wyloguj</a>
+    </nav>
+    <h1>Lista tras GPX</h1>
+    <table id="tracksTable">
+        <thead>
+            <tr>
+                <th data-sort="name">Nazwa pliku</th>
+                <th data-sort="start">Start</th>
+                <th data-sort="end">Koniec</th>
+                <th data-sort="duration">Czas trwania</th>
+                <th data-sort="dist">Długość [km]</th>
+                <th data-sort="avgSpeed">Śr. prędkość [km/h]</th>
+                <th data-sort="maxSpeed">Maks. prędkość [km/h]</th>
+            </tr>
+        </thead>
+        <tbody id="tracksTbody">
+            <tr><td colspan="7" style="text-align:center; color:#888;">Ładowanie...</td></tr>
+        </tbody>
+    </table>
+    <div id="mapModal" style="display:none;"></div>
+    <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@2.2.2"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.umd.min.js"></script>
+    <script>
+    // Funkcje pomocnicze do formatowania
+    function fmtDate(d) {
+        if (!d) return '-';
+        return new Date(d).toLocaleString();
+    }
+    function fmtTime(s) {
+        if (!s) return '-';
+        const h = Math.floor(s/3600);
+        const m = Math.floor((s%3600)/60);
+        const sec = Math.floor(s%60);
+        return `${h}h ${m}m ${sec}s`;
+    }
+    function fmtDist(m) {
+        return (m/1000).toFixed(2);
+    }
+    function fmtSpeed(s) {
+        return (s*3.6).toFixed(2);
+    }
+    // Haversine
+    function getDistanceFromLatLonInM(lat1,lon1,lat2,lon2) {
+        var R = 6371000;
+        var dLat = (lat2-lat1)*Math.PI/180;
+        var dLon = (lon2-lon1)*Math.PI/180;
+        var a = Math.sin(dLat/2) * Math.sin(dLat/2) + Math.cos(lat1*Math.PI/180) * Math.cos(lat2*Math.PI/180) * Math.sin(dLon/2) * Math.sin(dLon/2);
+        var c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+        var d = R * c;
+        return d;
+    }
+    // Statystyki z punktów GPX
+    function getGpxStats(trkpts) {
+        if (!trkpts || trkpts.length === 0) return null;
+        let dist = 0, maxSpeed = 0, sumSpeed = 0, speedCount = 0;
+        let startTime = null, endTime = null, prev = null;
+        for (let i = 0; i < trkpts.length; i++) {
+            const pt = trkpts[i];
+            const lat = parseFloat(pt.getAttribute('lat'));
+            const lon = parseFloat(pt.getAttribute('lon'));
+            const timeEl = pt.getElementsByTagName('time')[0];
+            const time = timeEl ? new Date(timeEl.textContent) : null;
+            if (i === 0) startTime = time;
+            if (i === trkpts.length-1) endTime = time;
+            if (prev && time && prev.time) {
+                const d = getDistanceFromLatLonInM(lat, lon, prev.lat, prev.lon);
+                dist += d;
+                const dt = (time - prev.time) / 1000;
+                if (dt > 0 && d > 0) {
+                    const speed = d / dt;
+                    if (speed < 20) {
+                        sumSpeed += speed;
+                        speedCount++;
+                        if (speed > maxSpeed) maxSpeed = speed;
+                    }
+                }
+            }
+            prev = {lat, lon, time};
+        }
+        const duration = (endTime && startTime) ? (endTime - startTime)/1000 : 0;
+        return {
+            start: startTime,
+            end: endTime,
+            duration,
+            dist,
+            avgSpeed: speedCount ? sumSpeed/speedCount : 0,
+            maxSpeed
+        };
+    }
+    // Pobierz listę plików i statystyki
+// Auth init
+fetch('/auth/me').then(r => { if (r.ok) return r.json(); throw 'not logged in'; })
+    .then(u => {
+        document.getElementById('userInfo').textContent = '👤 ' + u.name;
+        document.getElementById('logoutBtn').style.display = '';
+    }).catch(() => {});
+
+// Pobierz statystyki tras z backendu (cache)
+let tracks = [];
+fetch('/api/gpx/stats')
+    .then(res => {
+        if (res.status === 401) {
+            document.getElementById('tracksTbody').innerHTML = '<tr><td colspan="7" style="text-align:center;"><a href="/auth/login">Zaloguj się</a> aby zobaczyć trasy</td></tr>';
+            throw 'unauthorized';
+        }
+        return res.json();
+    })
+    .then(data => {
+        // Domyślne sortowanie malejąco po nazwie pliku
+        tracks = data.sort((a, b) => b.name.localeCompare(a.name));
+        renderTable(tracks);
+    });
+    // Renderuj tabelę
+    function renderTable(data) {
+        const tbody = document.getElementById('tracksTbody');
+        if (!data.length) {
+            tbody.innerHTML = '<tr><td colspan="7" style="text-align:center; color:#888;">Brak tras</td></tr>';
+            return;
+        }
+        tbody.innerHTML = '';
+    for (const row of data) {
+        const tr = document.createElement('tr');
+        tr.style.cursor = 'pointer';
+        tr.addEventListener('click', () => showMapModal(row));
+        tr.innerHTML = `<td>${row.name}</td>
+            <td>${fmtDate(row.start)}</td>
+            <td>${fmtDate(row.end)}</td>
+            <td>${fmtTime(row.duration)}</td>
+            <td>${fmtDist(row.dist)}</td>
+            <td>${fmtSpeed(row.avgSpeed)}</td>
+            <td>${fmtSpeed(row.maxSpeed)}</td>`;
+        tbody.appendChild(tr);
+    }
+    }
+    // Sortowanie
+    let sortKey = null, sortAsc = true;
+    document.querySelectorAll('th[data-sort]').forEach(th => {
+        th.addEventListener('click', () => {
+            const key = th.getAttribute('data-sort');
+            if (sortKey === key) sortAsc = !sortAsc; else { sortKey = key; sortAsc = true; }
+            tracks.sort((a, b) => {
+                let va = a[key], vb = b[key];
+                if (va == null) return 1;
+                if (vb == null) return -1;
+                if (va instanceof Date) va = va.getTime();
+                if (vb instanceof Date) vb = vb.getTime();
+                if (typeof va === 'string') return sortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
+                return sortAsc ? va - vb : vb - va;
+            });
+            renderTable(tracks);
+        });
+    });
+    // Modal z mapą
+    function showMapModal(row) {
+        // Pobierz plik GPX na żądanie, sparsuj i pokaż modal z zaawansowanym wykresem i szczegółami
+        fetch(`/api/gpx/${row.name}`)
+            .then(res => res.text())
+            .then(text => {
+                const parser = new DOMParser();
+                const xml = parser.parseFromString(text, 'application/xml');
+                const trkpts = Array.from(xml.getElementsByTagName('trkpt'));
+                if (trkpts.length === 0) return;
+                row.trkpts = trkpts;
+                // Szczegóły i rolling average, fragmenty itd.
+                const modal = document.getElementById('mapModal');
+                modal.innerHTML = `
+        <div class="map-modal-bg">
+          <div class="map-modal map-modal-wide" style="position:relative;">
+            <div class="map-modal-header">${row.name}<span class="map-modal-close" title="Zamknij">&times;</span></div>
+            <div style="display:flex; flex-direction:row; gap:0; min-width:900px; min-height:420px;">
+              <div id="modalMap" style="flex:1 1 60%; min-width:420px; min-height:420px; height:420px; position:relative;"></div>
+              <div style="flex:1 1 40%; min-width:340px; min-height:420px; display:flex; align-items:flex-start; justify-content:center; padding:0.5em 0.5em 0.5em 0.5em; position:relative;">
+                <canvas id="speedChart" width="400" height="340"></canvas>
+              </div>
+            </div>
+            <div id="trackDetails" style="position:fixed; top:40px; right:20px; background:#fff; font-size:13px; padding:8px 16px 8px 12px; border-radius:10px; box-shadow:0 2px 8px #0002; min-width:220px; max-width:320px; z-index:2000;"></div>
+          </div>
+        </div>`;
+                modal.style.display = 'block';
+                setTimeout(() => {
+                    // MAPA
+                    const map = L.map('modalMap').setView([52.2297, 21.0122], 13);
+                    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+                        attribution: 'Map data © <a href="https://openstreetmap.org">OpenStreetMap</a> contributors'
+                    }).addTo(map);
+                    const latlngs = row.trkpts.map(pt => [parseFloat(pt.getAttribute('lat')), parseFloat(pt.getAttribute('lon'))]);
+                    const polyline = L.polyline(latlngs, {color:'#0074D9', weight:5, opacity:0.9}).addTo(map);
+                    map.fitBounds(polyline.getBounds());
+
+                    // Szczegóły aktywności (jak na Strava)
+                    function showTrackDetails(stats) {
+                        const d = document.getElementById('trackDetails');
+                        function fmtPace(speedKmh) {
+                            if (!speedKmh || speedKmh <= 0) return '-';
+                            let speed = speedKmh;
+                            if (speed < 20) speed = speed * 3.6;
+                            const pace = 60 / speed;
+                            const min = Math.floor(pace);
+                            let sec = Math.round((pace - min) * 60);
+                            if (sec === 60) { sec = 0; min++; }
+                            return `${min}:${sec.toString().padStart(2, '0')} min/km`;
+                        }
+                        let html = `<b>Szczegóły trasy:</b><br>
+                            Start: <span style="font-weight:normal;">${fmtDate(stats.start)}</span><br>
+                            Koniec: <span style="font-weight:normal;">${fmtDate(stats.end)}</span><br>
+                            Dystans: <span style="font-weight:normal;">${fmtDist(stats.dist)} km</span><br>
+                            Czas: <span style="font-weight:normal;">${fmtTime(stats.duration)}</span><br>
+                            Śr. prędkość: <span style="font-weight:normal;">${stats.avgSpeed ? fmtSpeed(stats.avgSpeed) : '-'} km/h</span> <span style='color:#888;'>(<span style='font-variant-numeric:tabular-nums;'>${stats.avgSpeed ? fmtPace(stats.avgSpeed) : '-'}</span>)</span><br>
+                            Maks. prędkość: <span style="font-weight:normal;">${stats.maxSpeed ? fmtSpeed(stats.maxSpeed) : '-'} km/h</span><br>`;
+                        if (window._fragmentStats) {
+                            html += `<div style="margin-top:10px; padding:8px 10px; background:#fffbe7; border-radius:8px; border:2px solid #ffc107;">
+                                <b>Fragment wykresu:</b><br>
+                                <span style='font-size:12px;color:#888;'>Zaznaczenie: ${window._fragmentStats.range}</span><br>
+                                Dystans: <span style="font-weight:normal;">${fmtDist(window._fragmentStats.dist)} km</span><br>
+                                Czas: <span style="font-weight:normal;">${fmtTime(window._fragmentStats.duration)}</span><br>
+                                Śr. prędkość: <span style="font-weight:normal;">${window._fragmentStats.avgSpeed ? fmtSpeed(window._fragmentStats.avgSpeed) : '-' } km/h</span> <span style='color:#888;'>(<span style='font-variant-numeric:tabular-nums;'>${window._fragmentStats.avgSpeed ? fmtPace(window._fragmentStats.avgSpeed) : '-'}</span>)</span><br>
+                                Maks. prędkość: <span style="font-weight:normal;">${window._fragmentStats.maxSpeed ? fmtSpeed(window._fragmentStats.maxSpeed) : '-' } km/h</span><br>
+                                <button id='clearFragmentBtn' style='margin-top:6px; font-size:12px;'>Wyczyść zaznaczenie</button>
+                            </div>`;
+                        }
+                        d.innerHTML = html;
+                        if (window._fragmentStats) {
+                            document.getElementById('clearFragmentBtn').onclick = () => {
+                                window._fragmentStats = null;
+                                selection = null;
+                                if (chart.options.plugins.annotation && chart.options.plugins.annotation.annotations && chart.options.plugins.annotation.annotations.fragment) {
+                                    delete chart.options.plugins.annotation.annotations.fragment;
+                                }
+                                chart.update();
+                                if (window._fragmentPolyline) {
+                                    map.removeLayer(window._fragmentPolyline);
+                                    window._fragmentPolyline = null;
+                                }
+                                showTrackDetails(statsAll);
+                            };
+                        }
+                    }
+                    // Statystyki całej trasy
+                    const statsAll = getGpxStats(row.trkpts);
+                    showTrackDetails(statsAll);
+
+                    // WYKRES PRĘDKOŚCI - rolling average, fragmenty, marker na mapie
+                    const speedDataRaw = [];
+                    const timeLabelsRaw = [];
+                    const pointIdxToLatLng = [];
+                    let prev = null;
+                    let t0 = null;
+                    for (let i = 0; i < row.trkpts.length; i++) {
+                        const pt = row.trkpts[i];
+                        const timeEl = pt.getElementsByTagName('time')[0];
+                        const time = timeEl ? new Date(timeEl.textContent) : null;
+                        if (i === 0) t0 = time;
+                        if (prev && time && prev.time) {
+                            const lat = parseFloat(pt.getAttribute('lat'));
+                            const lon = parseFloat(pt.getAttribute('lon'));
+                            const d = getDistanceFromLatLonInM(lat, lon, prev.lat, prev.lon);
+                            const dt = (time - prev.time) / 1000;
+                            let speed = 0;
+                            if (dt > 0 && d > 0) {
+                                speed = d / dt;
+                                if (speed < 20) {
+                                    speedDataRaw.push(speed * 3.6);
+                                    timeLabelsRaw.push(((time - t0)/1000/60));
+                                    pointIdxToLatLng.push([lat, lon]);
+                                }
+                            }
+                        }
+                        prev = {lat: parseFloat(pt.getAttribute('lat')), lon: parseFloat(pt.getAttribute('lon')), time};
+                    }
+                    function rollingAvg(arr, window) {
+                        const out = [];
+                        for (let i = 0; i < arr.length; i++) {
+                            let sum = 0, cnt = 0;
+                            for (let j = Math.max(0, i-window+1); j <= i; j++) {
+                                sum += arr[j]; cnt++;
+                            }
+                            out.push(sum/cnt);
+                        }
+                        return out;
+                    }
+                    const speedAvg = rollingAvg(speedDataRaw, 10);
+                    let timeLabels = timeLabelsRaw;
+                    let speedRawFinal = speedDataRaw;
+                    let speedAvgFinal = speedAvg;
+                    let pointIdxFinal = pointIdxToLatLng;
+                    if (speedDataRaw.length > 1000) {
+                        const step = Math.ceil(speedDataRaw.length / 1000);
+                        speedRawFinal = speedDataRaw.filter((_,i)=>i%step===0);
+                        speedAvgFinal = speedAvg.filter((_,i)=>i%step===0);
+                        timeLabels = timeLabelsRaw.filter((_,i)=>i%step===0).map(x=>x.toFixed(1));
+                        pointIdxFinal = pointIdxToLatLng.filter((_,i)=>i%step===0);
+                    } else {
+                        timeLabels = timeLabelsRaw.map(x=>x.toFixed(1));
+                    }
+                    let hoverMarker = null;
+                    function showHoverMarker(latlng) {
+                        if (!hoverMarker) {
+                            hoverMarker = L.circleMarker(latlng, {radius:9, color:'#FF4136', fillColor:'#FF4136', fillOpacity:0.7, weight:2}).addTo(map);
+                        } else {
+                            hoverMarker.setLatLng(latlng);
+                            hoverMarker.setStyle({opacity:1, fillOpacity:0.7});
+                        }
+                    }
+                    function hideHoverMarker() {
+                        if (hoverMarker) hoverMarker.setStyle({opacity:0, fillOpacity:0});
+                    }
+                    const ctx = document.getElementById('speedChart').getContext('2d');
+                    let selection = null;
+                    let isSelecting = false;
+                    function chartIdxToTrkptIdx(idx) {
+                        if (!pointIdxFinal[idx]) return 0;
+                        const [lat, lon] = pointIdxFinal[idx];
+                        let bestIdx = 0;
+                        let bestDist = Infinity;
+                        for (let i = 0; i < row.trkpts.length; i++) {
+                            const pt = row.trkpts[i];
+                            const plat = parseFloat(pt.getAttribute('lat'));
+                            const plon = parseFloat(pt.getAttribute('lon'));
+                            const dist = Math.abs(plat - lat) + Math.abs(plon - lon);
+                            if (dist < bestDist) {
+                                bestDist = dist;
+                                bestIdx = i;
+                            }
+                        }
+                        return bestIdx;
+                    }
+                    const chart = new Chart(ctx, {
+                        type: 'line',
+                        data: {
+                            labels: timeLabels,
+                            datasets: [
+                                {
+                                    label: 'Prędkość chwilowa [km/h]',
+                                    data: speedRawFinal,
+                                    borderColor: '#0074D9',
+                                    backgroundColor: 'rgba(0,116,217,0.08)',
+                                    pointRadius: 0,
+                                    borderWidth: 1.5,
+                                    fill: false,
+                                    tension: 0.12,
+                                    order: 2
+                                },
+                                {
+                                    label: 'Średnia krocząca (10 pkt)',
+                                    data: speedAvgFinal,
+                                    borderColor: '#FF4136',
+                                    backgroundColor: 'rgba(255,65,54,0.08)',
+                                    pointRadius: 0,
+                                    borderWidth: 2.5,
+                                    fill: false,
+                                    tension: 0.12,
+                                    order: 1
+                                }
+                            ]
+                        },
+                        options: {
+                            responsive: true,
+                            plugins: {
+                                legend: { display: true, labels: { font: { size: 15 } } },
+                                tooltip: {
+                                    enabled: true,
+                                    mode: 'index',
+                                    intersect: false,
+                                    callbacks: {
+                                        label: function(context) {
+                                            return ' ' + context.parsed.y.toFixed(2) + ' km/h';
+                                        },
+                                        title: function(context) {
+                                            return 'Czas: ' + context[0].label + ' min';
+                                        }
+                                    }
+                                },
+                                zoom: {
+                                    pan: { enabled: true, mode: 'x' },
+                                    zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: 'x' },
+                                    limits: { x: { min: 0 } }
+                                },
+                                annotation: {
+                                    annotations: {}
+                                },
+                            },
+                            scales: {
+                                x: {
+                                    title: { display: true, text: 'Czas [min]', font: { size: 16 } },
+                                    ticks: { font: { size: 13 } }
+                                },
+                                y: {
+                                    title: { display: true, text: 'Prędkość [km/h]', font: { size: 16 } },
+                                    min: 0,
+                                    ticks: { font: { size: 13 } }
+                                }
+                            },
+                            hover: {
+                                mode: 'index',
+                                intersect: false
+                            },
+                            animation: false,
+                            onClick: null,
+                        },
+                        plugins: [{
+                            afterEvent: function(chart, args) {
+                                const event = args.event;
+                                if (event.type === 'mousemove' && chart.tooltip && chart.tooltip.dataPoints && chart.tooltip.dataPoints.length > 0) {
+                                    const idx = chart.tooltip.dataPoints[0].dataIndex;
+                                    if (pointIdxFinal[idx]) {
+                                        showHoverMarker(pointIdxFinal[idx]);
+                                    } else {
+                                        hideHoverMarker();
+                                    }
+                                } else if (event.type === 'mouseout') {
+                                    hideHoverMarker();
+                                }
+                                if (!chart._selectionHandlerAttached) {
+                                    let dragStartIdx = null;
+                                    chart.canvas.addEventListener('mousedown', function(ev) {
+                                        if (ev.button !== 0) return;
+                                        const points = chart.getElementsAtEventForMode(ev, 'nearest', {intersect: false}, false);
+                                        if (points.length > 0) {
+                                            const idx = points[0].index;
+                                            if (chart.options.plugins.annotation && chart.options.plugins.annotation.annotations && chart.options.plugins.annotation.annotations.fragment) {
+                                                const frag = chart.options.plugins.annotation.annotations.fragment;
+                                                if (idx >= frag.xMin && idx <= frag.xMax && frag.xMin !== undefined && frag.xMax !== undefined) {
+                                                    selection = null;
+                                                    window._fragmentStats = null;
+                                                    if (window._fragmentPolyline) {
+                                                        map.removeLayer(window._fragmentPolyline);
+                                                        window._fragmentPolyline = null;
+                                                    }
+                                                    if (chart.options.plugins.annotation && chart.options.plugins.annotation.annotations && chart.options.plugins.annotation.annotations.fragment) {
+                                                        delete chart.options.plugins.annotation.annotations.fragment;
+                                                    }
+                                                    chart.update();
+                                                    showTrackDetails(statsAll);
+                                                    dragStartIdx = null;
+                                                    return;
+                                                }
+                                            }
+                                            selection = {start: idx, end: idx};
+                                            dragStartIdx = idx;
+                                            isSelecting = true;
+                                            if (!chart.options.plugins.annotation.annotations) chart.options.plugins.annotation.annotations = {};
+                                            chart.options.plugins.annotation.annotations.fragment = {
+                                                type: 'box',
+                                                xMin: idx - 0.5,
+                                                xMax: idx + 0.5,
+                                                yMin: 0,
+                                                yMax: 'max',
+                                                backgroundColor: 'rgba(255, 193, 7, 0.55)',
+                                                borderColor: 'rgba(255,193,7,1)',
+                                                borderWidth: 4,
+                                                drawTime: 'afterDatasetsDraw',
+                                                label: {
+                                                    display: false
+                                                },
+                                                z: 999
+                                            };
+                                            chart.update();
+                                        }
+                                    });
+                                    chart.canvas.addEventListener('mousemove', function(ev) {
+                                        if (!isSelecting || !selection || !(ev.buttons & 1)) return;
+                                        const points = chart.getElementsAtEventForMode(ev, 'nearest', {intersect: false}, false);
+                                        if (points.length > 0) {
+                                            const idx = points[0].index;
+                                            selection.end = idx;
+                                            let s = selection.start, e = selection.end;
+                                            if (e < s) [s, e] = [e, s];
+                                            if (!chart.options.plugins.annotation.annotations) chart.options.plugins.annotation.annotations = {};
+                                            chart.options.plugins.annotation.annotations.fragment = {
+                                                type: 'box',
+                                                xMin: s - 0.5,
+                                                xMax: e + 0.5,
+                                                yMin: 0,
+                                                yMax: 'max',
+                                                backgroundColor: 'rgba(255, 193, 7, 0.55)',
+                                                borderColor: 'rgba(255,193,7,1)',
+                                                borderWidth: 4,
+                                                drawTime: 'afterDatasetsDraw',
+                                                label: {
+                                                    display: false
+                                                },
+                                                z: 999
+                                            };
+                                            chart.update();
+                                        }
+                                    });
+                                    chart.canvas.addEventListener('mouseup', function(ev) {
+                                        if (!selection) return;
+                                        if (isSelecting) {
+                                            isSelecting = false;
+                                            let s = selection.start, e = selection.end;
+                                            if (e < s) [s, e] = [e, s];
+                                            const trkptStart = chartIdxToTrkptIdx(s);
+                                            const trkptEnd = chartIdxToTrkptIdx(e);
+                                            const selTrkpts = row.trkpts.slice(trkptStart, trkptEnd+1);
+                                            const stats = getGpxStats(selTrkpts);
+                                            window._fragmentStats = {
+                                                ...stats,
+                                                range: s === e ? `${trkptStart+1}` : `${trkptStart+1} - ${trkptEnd+1}`
+                                            };
+                                            if (!chart.options.plugins.annotation.annotations) chart.options.plugins.annotation.annotations = {};
+                                            chart.options.plugins.annotation.annotations.fragment = {
+                                                type: 'box',
+                                                xMin: s - 0.5,
+                                                xMax: e + 0.5,
+                                                yMin: 0,
+                                                yMax: 'max',
+                                                backgroundColor: 'rgba(255, 193, 7, 0.55)',
+                                                borderColor: 'rgba(255,193,7,1)',
+                                                borderWidth: 4,
+                                                drawTime: 'afterDatasetsDraw',
+                                                label: {
+                                                    display: false
+                                                },
+                                                z: 999
+                                            };
+                                            chart.update();
+                                            if (window._fragmentPolyline) {
+                                                map.removeLayer(window._fragmentPolyline);
+                                            }
+                                            const fragLatLngs = row.trkpts.slice(trkptStart, trkptEnd+1).map(pt => [parseFloat(pt.getAttribute('lat')), parseFloat(pt.getAttribute('lon'))]);
+                                            window._fragmentPolyline = L.polyline(fragLatLngs, {color:'#FFC107', weight:7, opacity:0.85, dashArray:'8 8'}).addTo(map);
+                                            showTrackDetails(statsAll);
+                                            dragStartIdx = null;
+                                        }
+                                    });
+                                    chart._selectionHandlerAttached = true;
+                                }
+                            }
+                        }]
+                    });
+                }, 100);
+                document.querySelector('.map-modal-close').onclick = () => { modal.style.display = 'none'; };
+                document.querySelector('.map-modal-bg').onclick = e => { if (e.target === document.querySelector('.map-modal-bg')) modal.style.display = 'none'; };
+            });
+    }
+    </script>
+</body>
+</html>

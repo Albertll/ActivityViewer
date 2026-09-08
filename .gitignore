@@ -1,0 +1,36 @@
+# Data Protection keys (cookie encryption keys - never commit)
+dp-keys/
+
+# .NET build output
+bin/
+obj/
+*.user
+
+# Strava OAuth token
+activities/strava_token.json
+
+# Konfiguracja z prawdziwymi sekretami (Strava ClientSecret, klucz szyfrowania, connection string)
+# - szablon bez sekretów: appsettings.Example.json
+GpxApi/appsettings.json
+
+# Publish output (zawiera kopie appsettings.json z sekretami)
+wysylka/
+
+# Dane osobiste aktywności (trasy GPS, tokeny) sprzed migracji do bazy
+/activities/
+/activitiesOld/
+/gpx/
+/intervals/
+
+# Zarchiwizowany stary backend Node.js (server.js zawiera sekret Stravy)
+/old/
+
+node_modules/
+
+# IDE
+.vs/
+.vscode/
+
+# Lokalne instrukcje dla asystentów AI (opisują wewnętrzne szczegóły środowiska)
+/CLAUDE.md
+/.github/copilot-instructions.md

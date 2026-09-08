@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="pl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Strava - Lista aktywności</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+    <style>
+        body { font-family: Arial, sans-serif; margin: 0; padding: 0; }
+        h1 { margin: 1em; }
+        table { border-collapse: collapse; width: 98%; margin: 1em auto; background: #fff; }
+        th, td { border: 1px solid #ccc; padding: 0.5em 0.7em; text-align: left; }
+        th { background: #f0f0f0; cursor: pointer; user-select: none; }
+        tr:hover { background: #e6f2ff; }
+        .map-modal-bg { position: fixed; left:0; top:0; width:100vw; height:100vh; background:rgba(0,0,0,0.4); z-index:1000; display:flex; align-items:center; justify-content:center; }
+        .map-modal { background:#fff; border-radius:8px; box-shadow:0 2px 16px #0003; padding:0; min-width:350px; min-height:350px; max-width:90vw; max-height:90vh; display:flex; flex-direction:column; }
+        .map-modal-wide { min-width:900px !important; min-height:480px !important; max-width:98vw; max-height:98vh; }
+        .map-modal-header { padding:0.5em 1em; border-bottom:1px solid #ddd; font-weight:bold; display:flex; justify-content:space-between; align-items:center; }
+        .map-modal-close { cursor:pointer; font-size:1.3em; }
+        #modalMap { flex:1 1 auto; min-height:300px; min-width:300px; }
+    </style>
+</head>
+<body>
+    <nav style="background:#222; color:#fff; padding:0.7em 1em; display:flex; gap:1.5em; align-items:center;">
+      <a href="index.html" style="color:#fff; text-decoration:none; font-weight:bold;">Mapa GPX</a>
+      <a href="trasy.html" style="color:#fff; text-decoration:none;">Lista tras</a>
+      <a href="strava.html" style="color:#fff; text-decoration:none;">Strava</a>
+      <a href="intervals.html" style="color:#fff; text-decoration:none;">Interwały</a>
+      <span id="userInfo" style="margin-left:auto; font-size:0.9em;"></span>
+      <a id="logoutBtn" href="/auth/logout" style="color:#ff6b6b; text-decoration:none; font-size:0.9em; display:none;">Wyloguj</a>
+    </nav>
+    <h1>Aktywności Strava</h1>
+    <button id="stravaLoginBtn" onclick="window.location.href='/auth/login'" style="margin-left:1em;">Zaloguj przez Strava</button>
+    <table id="activitiesTable" style="display:none;">
+        <thead>
+            <tr>
+                <th>#</th>
+                <th>Nazwa</th>
+                <th>Typ</th>
+                <th>Data</th>
+                <th>Dystans [km]</th>
+                <th>Czas</th>
+                <th>GPX</th>
+                <th>Stream</th>
+            </tr>
+        </thead>
+        <tbody id="activitiesTbody">
+            <tr><td colspan="8" style="text-align:center; color:#888;">Brak danych</td></tr>
+        </tbody>
+    </table>
+    <div id="mapModal" style="display:none;"></div>
+    <div style="text-align:center; margin:1em;">
+        <button id="loadMoreBtn" style="display:none; padding:0.6em 2em; font-size:1.1em;">Więcej...</button>
+    </div>
+    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.umd.min.js"></script>
+    <script>
+
+    // --- Cookie-based auth ---
+    let currentUser = null;
+
+    async function initAuth() {
+        try {
+            const res = await fetch('/auth/me');
+            if (res.ok) {
+                currentUser = await res.json();
+                document.getElementById('stravaLoginBtn').style.display = 'none';
+                document.getElementById('userInfo').textContent = '👤 ' + currentUser.name;
+                document.getElementById('logoutBtn').style.display = '';
+                loadActivities();
+            } else {
+                document.getElementById('stravaLoginBtn').style.display = '';
+            }
+        } catch (e) {
+            document.getElementById('stravaLoginBtn').style.display = '';
+        }
+    }
+
+    initAuth();
+    // Obsługa przycisku "Więcej..." - nie używamy paginacji Strava API, dane z bazy
+    document.getElementById('loadMoreBtn').style.display = 'none';
+
+    async function loadActivities() {
+        document.getElementById('activitiesTable').style.display = '';
+        const tbody = document.getElementById('activitiesTbody');
+        tbody.innerHTML = '<tr><td colspan="8" style="text-align:center; color:#888;">Ładowanie...</td></tr>';
+
+        const res = await fetch('/api/activities/list');
+        if (res.status === 401) {
+            document.getElementById('stravaLoginBtn').style.display = '';
+            tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;">Zaloguj się aby zobaczyć aktywności</td></tr>';
+            return;
+        }
+        const data = await res.json();
+        tbody.innerHTML = '';
+        data.forEach((act, idx) => {
+            const tr = document.createElement('tr');
+            tr.style.cursor = 'pointer';
+            const gpxStatus = act.has_gpx
+                ? '<span style="color:green;font-size:1.3em;">✔️</span>'
+                : `<button class="gpx-download-btn" data-id="${act.id}">Generuj GPX</button>`;
+            const streamStatus = act.has_stream
+                ? '<span style="color:green;font-size:1.3em;" title="Stream zapisany">✔️</span>'
+                : `<button class="stream-download-btn" data-id="${act.id}" style="padding:0.3em 0.7em;font-size:0.85em;background:#e67e22;color:#fff;border:none;border-radius:4px;cursor:pointer;">Pobierz stream</button>`;
+            tr.innerHTML = `<td>${idx + 1}</td><td>${act.name}</td><td>${act.type}</td><td>${act.start_date ? new Date(act.start_date).toLocaleString() : '-'}</td><td>${(act.distance/1000).toFixed(2)}</td><td>${fmtTime(act.moving_time)}</td><td id="gpx-cell-${act.id}">${gpxStatus}</td><td id="stream-cell-${act.id}">${streamStatus}</td>`;
+            tr.onclick = (e) => {
+                if (e.target && (e.target.classList.contains('gpx-download-btn') || e.target.classList.contains('stream-download-btn'))) return;
+                showMapModal(act);
+            };
+            tbody.appendChild(tr);
+        });
+    // Obsługa pobierania streamu
+    document.addEventListener('click', async function(e) {
+        if (e.target && e.target.classList.contains('stream-download-btn')) {
+            const id = e.target.getAttribute('data-id');
+            e.target.disabled = true;
+            e.target.textContent = 'Pobieranie...';
+            try {
+                const resp = await fetch(`/api/activities/${id}/download-stream`, { method: 'POST' });
+                const cell = document.getElementById(`stream-cell-${id}`);
+                if (resp.ok) {
+                    if (cell) cell.innerHTML = '<span style="color:green;font-size:1.3em;" title="Stream zapisany">✔️</span>';
+                } else {
+                    const err = await resp.json().catch(() => ({}));
+                    alert('Błąd pobierania streamu: ' + (err.error || resp.status));
+                    e.target.disabled = false;
+                    e.target.textContent = 'Pobierz stream';
+                }
+            } catch (err) {
+                alert('Błąd połączenia z serwerem');
+                e.target.disabled = false;
+                e.target.textContent = 'Pobierz stream';
+            }
+        }
+    });
+    // Obsługa generowania GPX przez serwer (z zaszyfrowanego streamu)
+    document.addEventListener('click', async function(e) {
+        if (e.target && e.target.classList.contains('gpx-download-btn')) {
+            const id = e.target.getAttribute('data-id');
+            e.target.disabled = true;
+            e.target.textContent = 'Generowanie...';
+            try {
+                const resp = await fetch('/api/gpx/generate', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ activityId: id })
+                });
+                if (resp.ok) {
+                    const cell = document.getElementById(`gpx-cell-${id}`);
+                    if (cell) cell.innerHTML = '<span style="color:green;font-size:1.1em;">✔️</span>';
+                } else {
+                    const err = await resp.json().catch(() => ({}));
+                    alert('Błąd generowania GPX: ' + (err.error || resp.status));
+                    e.target.disabled = false;
+                    e.target.textContent = 'Generuj GPX';
+                }
+            } catch (err) {
+                alert('Błąd połączenia z serwerem');
+                e.target.disabled = false;
+                e.target.textContent = 'Generuj GPX';
+            }
+        }
+    });
+    }
+
+    function fmtTime(s) {
+        if (!s) return '-';
+        const h = Math.floor(s/3600);
+        const m = Math.floor((s%3600)/60);
+        const sec = Math.floor(s%60);
+        return `${h}h ${m}m ${sec}s`;
+    }
+
+    // --- MODAL MAPA + WYKRES ---
+    async function showMapModal(act) {
+        const modal = document.getElementById('mapModal');
+        modal.innerHTML = `
+        <div class="map-modal-bg">
+          <div class="map-modal map-modal-wide">
+            <div class="map-modal-header" style="display:flex; align-items:center; justify-content:space-between; gap:1em;">
+              <span>${act.name}</span>
+              <div style="display:flex; align-items:center; gap:0.7em;">
+                <button id="exportGpxBtn" style="font-size:1em;">Eksportuj do GPX</button>
+                <span class="map-modal-close" title="Zamknij" style="font-size:1.5em; cursor:pointer;">&times;</span>
+              </div>
+            </div>
+            <div style="display:flex; flex-direction:row; gap:0; min-width:900px; min-height:420px;">
+              <div id="modalMap" style="flex:1 1 60%; min-width:420px; min-height:420px; height:420px;"></div>
+              <div style="flex:1 1 40%; min-width:340px; min-height:420px; display:flex; align-items:flex-start; justify-content:center; padding:0.5em 0.5em 0.5em 0.5em;">
+                <canvas id="speedChart" width="400" height="420"></canvas>
+              </div>
+            </div>
+          </div>
+        </div>`;
+        modal.style.display = 'block';
+        // Pobierz streamy aktywności (dokładne punkty GPS, wysokość itd.)
+        let latlngs = [];
+        let altitudes = [];
+        let times = [];
+        let velocities = [];
+        let startDate = act.start_date;
+        try {
+            const streamsRes = await fetch(`/api/activities/${act.id}/stream`);
+            if (streamsRes.ok) {
+                const streams = await streamsRes.json();
+                if (streams.latlng && streams.latlng.data) latlngs = streams.latlng.data;
+                if (streams.altitude && streams.altitude.data) altitudes = streams.altitude.data;
+                if (streams.time && streams.time.data) times = streams.time.data;
+                if (streams.velocity_smooth && streams.velocity_smooth.data) velocities = streams.velocity_smooth.data;
+            }
+        } catch (e) {
+            console.error('Błąd pobierania streamów:', e);
+            latlngs = [];
+            altitudes = [];
+            times = [];
+            velocities = [];
+        }
+        // GPX GENERATOR
+        function generateGpx(latlngs, altitudes, times, startDate) {
+            function pad(n) { return n < 10 ? '0' + n : n; }
+            function toIso(dt) {
+                return dt.getUTCFullYear() + '-' + pad(dt.getUTCMonth()+1) + '-' + pad(dt.getUTCDate()) + 'T' + pad(dt.getUTCHours()) + ':' + pad(dt.getUTCMinutes()) + ':' + pad(dt.getUTCSeconds()) + 'Z';
+            }
+            let gpx = `<?xml version="1.0" encoding="UTF-8"?>\n`;
+            gpx += `<gpx version="1.1" creator="Strava2GPX" xmlns="http://www.topografix.com/GPX/1/1">\n<trk><name>${(act.name||'Trasa Strava')}</name><trkseg>\n`;
+            for (let i = 0; i < latlngs.length; i++) {
+                const [lat, lon] = latlngs[i];
+                let ele = altitudes[i] !== undefined ? `<ele>${altitudes[i].toFixed(1)}</ele>` : '';
+                let timeTag = '';
+                if (times[i] !== undefined && startDate) {
+                    const t = new Date(Date.parse(startDate) + times[i]*1000);
+                    timeTag = `<time>${toIso(t)}</time>`;
+                }
+                gpx += `<trkpt lat="${lat}" lon="${lon}">${ele}${timeTag}</trkpt>\n`;
+            }
+            gpx += `</trkseg></trk></gpx>`;
+            return gpx;
+        }
+
+        // Obsługa eksportu GPX
+        setTimeout(() => {
+            const btn = document.getElementById('exportGpxBtn');
+            if (btn) {
+                btn.onclick = () => {
+                    const gpx = generateGpx(latlngs, altitudes, times, startDate);
+                    const blob = new Blob([gpx], {type:'application/gpx+xml'});
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = (act.name || 'strava-activity') + '.gpx';
+                    document.body.appendChild(a);
+                    a.click();
+                    setTimeout(()=>{ document.body.removeChild(a); URL.revokeObjectURL(url); }, 100);
+                };
+            }
+        }, 200);
+        // MAPA
+        const map = L.map('modalMap').setView([52.2297, 21.0122], 13);
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: 'Map data © <a href="https://openstreetmap.org">OpenStreetMap</a> contributors'
+        }).addTo(map);
+        if (latlngs.length > 0) {
+            const polyline = L.polyline(latlngs, {color:'#0074D9', weight:5, opacity:0.9}).addTo(map);
+            map.fitBounds(polyline.getBounds());
+            setTimeout(()=>{ map.invalidateSize(); }, 300);
+        } else {
+            // Brak śladu
+            map.setView([52.2297, 21.0122], 13);
+            setTimeout(()=>{ map.invalidateSize(); }, 300);
+            const info = L.control({position:'topright'});
+            info.onAdd = function() {
+                const div = L.DomUtil.create('div', 'no-gpx-info');
+                div.innerHTML = '<b>Brak śladu GPS dla tej aktywności</b>';
+                div.style.background = '#fff';
+                div.style.padding = '1em';
+                div.style.borderRadius = '8px';
+                div.style.boxShadow = '0 2px 8px #0002';
+                return div;
+            };
+            info.addTo(map);
+        }
+        // Szczegóły aktywności (mniejsza czcionka)
+        // Szczegóły aktywności (mniejsza czcionka) - poprawione pozycjonowanie
+        const detailsDiv = document.createElement('div');
+        detailsDiv.style.fontSize = '13px';
+        detailsDiv.style.margin = '0 0 0 0';
+        detailsDiv.style.textAlign = 'left';
+        detailsDiv.style.position = 'absolute';
+        detailsDiv.style.top = '18px';
+        detailsDiv.style.right = '30px';
+        detailsDiv.style.background = '#fff';
+        detailsDiv.style.padding = '8px 16px 8px 12px';
+        detailsDiv.style.borderRadius = '10px';
+        detailsDiv.style.boxShadow = '0 2px 8px #0002';
+        detailsDiv.innerHTML = `
+            <b>Szczegóły aktywności:</b><br>
+            Nazwa: <span style="font-weight:normal;">${act.name || '-'}</span><br>
+            Typ: <span style="font-weight:normal;">${act.type || '-'}</span><br>
+            Data: <span style="font-weight:normal;">${(new Date(act.start_date)).toLocaleString()}</span><br>
+            Dystans: <span style="font-weight:normal;">${((act.distance/1000).toFixed(2) || '-')} km</span><br>
+            Czas: <span style="font-weight:normal;">${fmtTime(act.moving_time) || '-'}</span><br>
+            ${act.total_elevation_gain !== undefined ? `Przewyższenie: <span style='font-weight:normal;'>${act.total_elevation_gain.toFixed(0)} m</span><br>` : ''}
+            ${act.average_speed !== undefined ? `Śr. prędkość: <span style='font-weight:normal;'>${(act.average_speed * 3.6).toFixed(1)} km/h</span><br>` : ''}
+            ${act.max_speed !== undefined ? `Maks. prędkość: <span style='font-weight:normal;'>${(act.max_speed * 3.6).toFixed(1)} km/h</span><br>` : ''}
+        `;
+        // Dodaj do modal, nie do headera, aby nie rozpychać nagłówka
+        document.querySelector('.map-modal').appendChild(detailsDiv);
+
+        // --- WYKRES PRĘDKOŚCI Chart.js jak w trasy.html ---
+        // Generowanie danych wykresu
+        const speedDataRaw = [];
+        const timeLabelsRaw = [];
+        const pointIdxToLatLng = [];
+        let prev = null;
+        let t0 = null;
+        for (let i = 0; i < latlngs.length; i++) {
+            const time = times[i] !== undefined ? new Date(Date.parse(startDate) + times[i]*1000) : null;
+            if (i === 0) t0 = time;
+            if (prev && time && prev.time) {
+                const lat = latlngs[i][0];
+                const lon = latlngs[i][1];
+                const d = getDistanceFromLatLonInM(lat, lon, prev.lat, prev.lon);
+                const dt = (time - prev.time) / 1000;
+                let speed = 0;
+                if (dt > 0 && d > 0) {
+                    speed = d / dt;
+                    if (speed < 20) {
+                        speedDataRaw.push(speed * 3.6); // km/h
+                        timeLabelsRaw.push(((time - t0)/1000/60)); // minuty od startu
+                        pointIdxToLatLng.push([lat, lon]);
+                    }
+                }
+            }
+            prev = {lat: latlngs[i][0], lon: latlngs[i][1], time};
+        }
+        // Rolling average (okno 10)
+        function rollingAvg(arr, window) {
+            const out = [];
+            for (let i = 0; i < arr.length; i++) {
+                let sum = 0, cnt = 0;
+                for (let j = Math.max(0, i-window+1); j <= i; j++) {
+                    sum += arr[j]; cnt++;
+                }
+                out.push(sum/cnt);
+            }
+            return out;
+        }
+        const speedAvg = rollingAvg(speedDataRaw, 10);
+        // Downsampling jeśli bardzo dużo punktów (np. > 1000)
+        let timeLabels = timeLabelsRaw;
+        let speedRawFinal = speedDataRaw;
+        let speedAvgFinal = speedAvg;
+        let pointIdxFinal = pointIdxToLatLng;
+        if (speedDataRaw.length > 1000) {
+            const step = Math.ceil(speedDataRaw.length / 1000);
+            speedRawFinal = speedDataRaw.filter((_,i)=>i%step===0);
+            speedAvgFinal = speedAvg.filter((_,i)=>i%step===0);
+            timeLabels = timeLabelsRaw.filter((_,i)=>i%step===0).map(x=>x.toFixed(1));
+            pointIdxFinal = pointIdxToLatLng.filter((_,i)=>i%step===0);
+        } else {
+            timeLabels = timeLabelsRaw.map(x=>x.toFixed(1));
+        }
+        // Dodaj marker do mapy (ukryty na start)
+        let hoverMarker = null;
+        function showHoverMarker(latlng) {
+            if (!hoverMarker) {
+                hoverMarker = L.circleMarker(latlng, {radius:9, color:'#FF4136', fillColor:'#FF4136', fillOpacity:0.7, weight:2}).addTo(map);
+            } else {
+                hoverMarker.setLatLng(latlng);
+                hoverMarker.setStyle({opacity:1, fillOpacity:0.7});
+            }
+        }
+        function hideHoverMarker() {
+            if (hoverMarker) hoverMarker.setStyle({opacity:0, fillOpacity:0});
+        }
+        const ctx = document.getElementById('speedChart').getContext('2d');
+        const chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: timeLabels,
+                datasets: [
+                    {
+                        label: 'Prędkość chwilowa [km/h]',
+                        data: speedRawFinal,
+                        borderColor: '#0074D9',
+                        backgroundColor: 'rgba(0,116,217,0.08)',
+                        pointRadius: 0,
+                        borderWidth: 1.5,
+                        fill: false,
+                        tension: 0.12,
+                        order: 2
+                    },
+                    {
+                        label: 'Średnia krocząca (10 pkt)',
+                        data: speedAvgFinal,
+                        borderColor: '#FF4136',
+                        backgroundColor: 'rgba(255,65,54,0.08)',
+                        pointRadius: 0,
+                        borderWidth: 2.5,
+                        fill: false,
+                        tension: 0.12,
+                        order: 1
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                plugins: {
+                    legend: { display: true, labels: { font: { size: 15 } } },
+                    tooltip: {
+                        enabled: true,
+                        mode: 'index',
+                        intersect: false,
+                        callbacks: {
+                            label: function(context) {
+                                return ' ' + context.parsed.y.toFixed(2) + ' km/h';
+                            },
+                            title: function(context) {
+                                return 'Czas: ' + context[0].label + ' min';
+                            }
+                        }
+                    },
+                    zoom: {
+                        pan: { enabled: true, mode: 'x' },
+                        zoom: { wheel: { enabled: true }, pinch: { enabled: true }, mode: 'x' }
+                    }
+                },
+                scales: {
+                    x: {
+                        title: { display: true, text: 'Czas [min]', font: { size: 16 } },
+                        ticks: { font: { size: 13 } }
+                    },
+                    y: {
+                        title: { display: true, text: 'Prędkość [km/h]', font: { size: 16 } },
+                        min: 0,
+                        ticks: { font: { size: 13 } }
+                    }
+                },
+                hover: {
+                    mode: 'index',
+                    intersect: false
+                },
+                animation: false
+            },
+            plugins: [{
+                afterEvent: function(chart, args) {
+                    const event = args.event;
+                    if (event.type === 'mousemove' && chart.tooltip && chart.tooltip.dataPoints && chart.tooltip.dataPoints.length > 0) {
+                        const idx = chart.tooltip.dataPoints[0].dataIndex;
+                        if (pointIdxFinal[idx]) {
+                            showHoverMarker(pointIdxFinal[idx]);
+                        } else {
+                            hideHoverMarker();
+                        }
+                    } else if (event.type === 'mouseout') {
+                        hideHoverMarker();
+                    }
+                }
+            }]
+        });
+    // Funkcja dekodująca polyline Google/Strava do tablicy [lat,lon]
+    // Źródło: https://github.com/mapbox/polyline
+    function decodePolyline(str, precision) {
+        let index = 0, lat = 0, lng = 0, coordinates = [], shift = 0, result = 0, byte = null, latitude_change, longitude_change,
+            factor = Math.pow(10, precision || 5);
+        while (index < str.length) {
+            byte = null; shift = 0; result = 0;
+            do {
+                byte = str.charCodeAt(index++) - 63;
+                result |= (byte & 0x1f) << shift;
+                shift += 5;
+            } while (byte >= 0x20);
+            latitude_change = ((result & 1) ? ~(result >> 1) : (result >> 1));
+            shift = result = 0;
+            do {
+                byte = str.charCodeAt(index++) - 63;
+                result |= (byte & 0x1f) << shift;
+                shift += 5;
+            } while (byte >= 0x20);
+            longitude_change = ((result & 1) ? ~(result >> 1) : (result >> 1));
+            lat += latitude_change;
+            lng += longitude_change;
+            coordinates.push([lat / factor, lng / factor]);
+        }
+        return coordinates;
+    }
+        document.querySelector('.map-modal-close').onclick = () => { modal.style.display = 'none'; };
+        document.querySelector('.map-modal-bg').onclick = e => { if (e.target === document.querySelector('.map-modal-bg')) modal.style.display = 'none'; };
+    }
+
+    // Haversine
+    function getDistanceFromLatLonInM(lat1,lon1,lat2,lon2) {
+        var R = 6371000;
+        var dLat = (lat2-lat1)*Math.PI/180;
+        var dLon = (lon2-lon1)*Math.PI/180;
+        var a = Math.sin(dLat/2) * Math.sin(dLat/2) + Math.cos(lat1*Math.PI/180) * Math.cos(lat2*Math.PI/180) * Math.sin(dLon/2) * Math.sin(dLon/2);
+        var c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+        var d = R * c;
+        return d;
+    }
+    </script>
+</body>
+</html>
