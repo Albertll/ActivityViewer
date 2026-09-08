@@ -234,45 +234,7 @@ public class StravaActivitySyncService : BackgroundService
 
                 try
                 {
-                    // Pobierz szczegóły aktywności (pełny JSON)
-                    if (activity.EncryptedActivityJson == null)
-                    {
-                        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-                        var actResp = await client.GetAsync($"https://www.strava.com/api/v3/activities/{activity.StravaActivityId}", ct);
-                        if (actResp.IsSuccessStatusCode)
-                        {
-                            var actJson = await actResp.Content.ReadAsStringAsync(ct);
-                            var (encActJson, actJsonIv) = encryption.Encrypt(actJson, user.StravaAthleteId);
-                            activity.EncryptedActivityJson = encActJson;
-                            activity.ActivityJsonIV = actJsonIv;
-                        }
-                        else
-                        {
-                            _logger.LogWarning("[StravaSync] Nie udało się pobrać szczegółów aktywności {Id}: {Code}",
-                                activity.StravaActivityId, actResp.StatusCode);
-                            continue;
-                        }
-                    }
-
-                    // Pobierz stream
-                    var streamUrl = $"https://www.strava.com/api/v3/activities/{activity.StravaActivityId}/streams?keys=latlng,time,altitude,heartrate,distance,velocity_smooth&key_by_type=true";
-                    client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-                    var streamResp = await client.GetAsync(streamUrl, ct);
-
-                    if (streamResp.IsSuccessStatusCode)
-                    {
-                        var streamJson = await streamResp.Content.ReadAsStringAsync(ct);
-                        var (encrypted, iv) = encryption.Encrypt(streamJson, user.StravaAthleteId);
-                        activity.Stream = new ActivityStream
-                        {
-                            EncryptedData = encrypted,
-                            IV = iv
-                        };
-
-                        // Generuj GPX od razu
-                        GenerateAndSaveGpx(activity, streamJson, encryption, user.StravaAthleteId);
-                    }
-
+                    await DownloadActivityDataAsync(client, accessToken, user, activity, encryption, ct);
                     await db.SaveChangesAsync(ct);
                     downloaded++;
                 }
@@ -334,48 +296,63 @@ public class StravaActivitySyncService : BackgroundService
         if (activity == null) return false;
 
         var client = _httpClientFactory.CreateClient();
+        var ok = await DownloadActivityDataAsync(client, accessToken, user, activity, encryption, CancellationToken.None);
+        await db.SaveChangesAsync();
+        return ok;
+    }
 
-        // Pobierz szczegóły aktywności jeśli brak
+    /// <summary>
+    /// Pobiera ze Stravy brakujący pełny JSON aktywności oraz stream (szyfrując je na encji)
+    /// i generuje GPX, gdy stream jest dostępny. Nie zapisuje zmian w bazie - to robi wołający.
+    /// Zwraca false, gdy nie udało się pobrać streamu.
+    /// </summary>
+    private async Task<bool> DownloadActivityDataAsync(HttpClient client, string accessToken, AppUser user,
+        ActivityRecord activity, EncryptionService encryption, CancellationToken ct)
+    {
+        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+
+        // Pełny JSON aktywności (jeśli brak)
         if (activity.EncryptedActivityJson == null)
         {
-            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-            var actResp = await client.GetAsync($"https://www.strava.com/api/v3/activities/{stravaActivityId}");
+            var actResp = await client.GetAsync($"https://www.strava.com/api/v3/activities/{activity.StravaActivityId}", ct);
             if (actResp.IsSuccessStatusCode)
             {
-                var actJson = await actResp.Content.ReadAsStringAsync();
-                var (enc, iv) = encryption.Encrypt(actJson, user.StravaAthleteId);
-                activity.EncryptedActivityJson = enc;
-                activity.ActivityJsonIV = iv;
+                var actJson = await actResp.Content.ReadAsStringAsync(ct);
+                var (encActJson, actJsonIv) = encryption.Encrypt(actJson, user.StravaAthleteId);
+                activity.EncryptedActivityJson = encActJson;
+                activity.ActivityJsonIV = actJsonIv;
+            }
+            else
+            {
+                _logger.LogWarning("[StravaSync] Nie udało się pobrać szczegółów aktywności {Id}: {Code}",
+                    activity.StravaActivityId, actResp.StatusCode);
             }
         }
 
-        // Pobierz stream jeśli brak
+        // Stream (jeśli brak) + generowanie GPX
         if (activity.Stream == null)
         {
-            var streamUrl = $"https://www.strava.com/api/v3/activities/{stravaActivityId}/streams?keys=latlng,time,altitude,heartrate,distance,velocity_smooth&key_by_type=true";
-            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-            var streamResp = await client.GetAsync(streamUrl);
-            if (!streamResp.IsSuccessStatusCode) return false;
+            var streamUrl = $"https://www.strava.com/api/v3/activities/{activity.StravaActivityId}/streams?keys=latlng,time,altitude,heartrate,distance,velocity_smooth&key_by_type=true";
+            var streamResp = await client.GetAsync(streamUrl, ct);
+            if (!streamResp.IsSuccessStatusCode)
+                return false;
 
-            var streamJson = await streamResp.Content.ReadAsStringAsync();
+            var streamJson = await streamResp.Content.ReadAsStringAsync(ct);
             var (encrypted, iv) = encryption.Encrypt(streamJson, user.StravaAthleteId);
             activity.Stream = new ActivityStream
             {
                 EncryptedData = encrypted,
                 IV = iv
             };
-
-            // Generuj GPX
             GenerateAndSaveGpx(activity, streamJson, encryption, user.StravaAthleteId);
         }
         else if (activity.EncryptedGpxData == null)
         {
-            // Ma stream ale brak GPX - wygeneruj
+            // Ma stream, ale brak GPX - wygeneruj z zapisanego streamu
             var streamJson = encryption.Decrypt(activity.Stream.EncryptedData, activity.Stream.IV, user.StravaAthleteId);
             GenerateAndSaveGpx(activity, streamJson, encryption, user.StravaAthleteId);
         }
 
-        await db.SaveChangesAsync();
         return true;
     }
 

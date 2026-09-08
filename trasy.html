@@ -28,6 +28,7 @@
       <a href="strava.html" style="color:#fff; text-decoration:none;">Strava</a>
       <a href="intervals.html" style="color:#fff; text-decoration:none;">Interwały</a>
       <span id="userInfo" style="margin-left:auto; font-size:0.9em;"></span>
+      <span id="uptimeInfo" style="font-size:0.85em; color:#aaa;"></span>
       <a id="logoutBtn" href="/auth/logout" style="color:#ff6b6b; text-decoration:none; font-size:0.9em; display:none;">Wyloguj</a>
     </nav>
     <h1>Lista tras GPX</h1>
@@ -52,6 +53,7 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.2"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@2.2.2"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.umd.min.js"></script>
+    <script src="common.js"></script>
     <script>
     // Funkcje pomocnicze do formatowania
     function fmtDate(d) {
@@ -71,61 +73,8 @@
     function fmtSpeed(s) {
         return (s*3.6).toFixed(2);
     }
-    // Haversine
-    function getDistanceFromLatLonInM(lat1,lon1,lat2,lon2) {
-        var R = 6371000;
-        var dLat = (lat2-lat1)*Math.PI/180;
-        var dLon = (lon2-lon1)*Math.PI/180;
-        var a = Math.sin(dLat/2) * Math.sin(dLat/2) + Math.cos(lat1*Math.PI/180) * Math.cos(lat2*Math.PI/180) * Math.sin(dLon/2) * Math.sin(dLon/2);
-        var c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-        var d = R * c;
-        return d;
-    }
-    // Statystyki z punktów GPX
-    function getGpxStats(trkpts) {
-        if (!trkpts || trkpts.length === 0) return null;
-        let dist = 0, maxSpeed = 0, sumSpeed = 0, speedCount = 0;
-        let startTime = null, endTime = null, prev = null;
-        for (let i = 0; i < trkpts.length; i++) {
-            const pt = trkpts[i];
-            const lat = parseFloat(pt.getAttribute('lat'));
-            const lon = parseFloat(pt.getAttribute('lon'));
-            const timeEl = pt.getElementsByTagName('time')[0];
-            const time = timeEl ? new Date(timeEl.textContent) : null;
-            if (i === 0) startTime = time;
-            if (i === trkpts.length-1) endTime = time;
-            if (prev && time && prev.time) {
-                const d = getDistanceFromLatLonInM(lat, lon, prev.lat, prev.lon);
-                dist += d;
-                const dt = (time - prev.time) / 1000;
-                if (dt > 0 && d > 0) {
-                    const speed = d / dt;
-                    if (speed < 20) {
-                        sumSpeed += speed;
-                        speedCount++;
-                        if (speed > maxSpeed) maxSpeed = speed;
-                    }
-                }
-            }
-            prev = {lat, lon, time};
-        }
-        const duration = (endTime && startTime) ? (endTime - startTime)/1000 : 0;
-        return {
-            start: startTime,
-            end: endTime,
-            duration,
-            dist,
-            avgSpeed: speedCount ? sumSpeed/speedCount : 0,
-            maxSpeed
-        };
-    }
-    // Pobierz listę plików i statystyki
-// Auth init
-fetch('/auth/me').then(r => { if (r.ok) return r.json(); throw 'not logged in'; })
-    .then(u => {
-        document.getElementById('userInfo').textContent = '👤 ' + u.name;
-        document.getElementById('logoutBtn').style.display = '';
-    }).catch(() => {});
+    // Auth init (wspólne w common.js)
+    initNavUser();
 
 // Pobierz statystyki tras z backendu (cache)
 let tracks = [];
@@ -141,7 +90,8 @@ fetch('/api/gpx/stats')
         // Domyślne sortowanie malejąco po nazwie pliku
         tracks = data.sort((a, b) => b.name.localeCompare(a.name));
         renderTable(tracks);
-    });
+    })
+    .catch(() => {}); // 401 obsłużone wyżej - nie zaśmiecaj konsoli
     // Renderuj tabelę
     function renderTable(data) {
         const tbody = document.getElementById('tracksTbody');

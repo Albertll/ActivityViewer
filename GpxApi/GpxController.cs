@@ -3,12 +3,11 @@ using GpxApi.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using System.Security.Claims;
 
 [ApiController]
 [Route("api/[controller]")]
 [Authorize]
-public class GpxController : ControllerBase
+public class GpxController : ApiControllerBase
 {
     private readonly AppDbContext _db;
     private readonly EncryptionService _encryption;
@@ -20,12 +19,6 @@ public class GpxController : ControllerBase
         _encryption = encryption;
         _syncService = syncService;
     }
-
-    private int GetUserId() =>
-        int.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
-
-    private long GetStravaAthleteId() =>
-        long.Parse(User.FindFirstValue("StravaAthleteId")!);
 
     /// <summary>
     /// Lista aktywności ze statystykami (zamiennik starego stats z plików)

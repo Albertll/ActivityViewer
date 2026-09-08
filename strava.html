@@ -32,7 +32,7 @@
     </nav>
     <h1>Aktywności Strava</h1>
     <button id="stravaLoginBtn" onclick="window.location.href='/auth/login'" style="margin-left:1em;">Zaloguj przez Strava</button>
-    <button id="syncBtn" onclick="syncStrava(this)" style="margin-left:1em; display:none; padding:0.4em 1em; background:#27ae60; color:#fff; border:none; border-radius:4px; cursor:pointer;">🔄 Odśwież ze Stravy</button>
+    <button id="syncBtn" onclick="syncStrava(this, loadActivities)" style="margin-left:1em; display:none; padding:0.4em 1em; background:#27ae60; color:#fff; border:none; border-radius:4px; cursor:pointer;">🔄 Odśwież ze Stravy</button>
     <table id="activitiesTable" style="display:none;">
         <thead>
             <tr>
@@ -57,6 +57,7 @@
     <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1/dist/chartjs-plugin-zoom.umd.min.js"></script>
+    <script src="common.js"></script>
     <script>
 
     // --- Cookie-based auth ---
@@ -81,51 +82,8 @@
     }
 
     initAuth();
-    loadUptime();
     // Obsługa przycisku "Więcej..." - nie używamy paginacji Strava API, dane z bazy
     document.getElementById('loadMoreBtn').style.display = 'none';
-
-    // Ręczne dociągnięcie nowych aktywności ze Stravy (sync działa w tle na serwerze)
-    async function syncStrava(btn) {
-        btn.disabled = true;
-        btn.textContent = 'Synchronizuję...';
-        try {
-            const res = await fetch('/api/activities/sync', { method: 'POST' });
-            if (res.ok) {
-                // Sync działa w tle - daj mu chwilę i przeładuj listę
-                await new Promise(r => setTimeout(r, 3000));
-                await loadActivities();
-            } else {
-                const err = await res.json().catch(() => ({}));
-                alert('Błąd synchronizacji: ' + (err.error || res.status));
-            }
-        } catch (e) {
-            alert('Błąd połączenia z serwerem');
-        }
-        btn.disabled = false;
-        btn.textContent = '🔄 Odśwież ze Stravy';
-    }
-
-    // Czas działania backendu (endpoint /api/uptime) - m.in. podgląd usypiania na serwerze
-    function fmtUptime(s) {
-        const d = Math.floor(s / 86400);
-        const h = Math.floor((s % 86400) / 3600);
-        const m = Math.floor((s % 3600) / 60);
-        if (d > 0) return `${d} d ${h} h`;
-        if (h > 0) return `${h} h ${m} min`;
-        return `${m} min`;
-    }
-
-    async function loadUptime() {
-        try {
-            const res = await fetch('/api/uptime');
-            if (!res.ok) return;
-            const data = await res.json();
-            const el = document.getElementById('uptimeInfo');
-            el.textContent = `⏱ ${fmtUptime(data.uptimeSeconds)}`;
-            el.title = 'Aplikacja działa od: ' + new Date(data.startedAtUtc).toLocaleString('pl-PL');
-        } catch (e) { /* backend niedostępny - pomiń */ }
-    }
 
     async function loadActivities() {
         document.getElementById('activitiesTable').style.display = '';
@@ -505,45 +463,8 @@
                 }
             }]
         });
-    // Funkcja dekodująca polyline Google/Strava do tablicy [lat,lon]
-    // Źródło: https://github.com/mapbox/polyline
-    function decodePolyline(str, precision) {
-        let index = 0, lat = 0, lng = 0, coordinates = [], shift = 0, result = 0, byte = null, latitude_change, longitude_change,
-            factor = Math.pow(10, precision || 5);
-        while (index < str.length) {
-            byte = null; shift = 0; result = 0;
-            do {
-                byte = str.charCodeAt(index++) - 63;
-                result |= (byte & 0x1f) << shift;
-                shift += 5;
-            } while (byte >= 0x20);
-            latitude_change = ((result & 1) ? ~(result >> 1) : (result >> 1));
-            shift = result = 0;
-            do {
-                byte = str.charCodeAt(index++) - 63;
-                result |= (byte & 0x1f) << shift;
-                shift += 5;
-            } while (byte >= 0x20);
-            longitude_change = ((result & 1) ? ~(result >> 1) : (result >> 1));
-            lat += latitude_change;
-            lng += longitude_change;
-            coordinates.push([lat / factor, lng / factor]);
-        }
-        return coordinates;
-    }
         document.querySelector('.map-modal-close').onclick = () => { modal.style.display = 'none'; };
         document.querySelector('.map-modal-bg').onclick = e => { if (e.target === document.querySelector('.map-modal-bg')) modal.style.display = 'none'; };
-    }
-
-    // Haversine
-    function getDistanceFromLatLonInM(lat1,lon1,lat2,lon2) {
-        var R = 6371000;
-        var dLat = (lat2-lat1)*Math.PI/180;
-        var dLon = (lon2-lon1)*Math.PI/180;
-        var a = Math.sin(dLat/2) * Math.sin(dLat/2) + Math.cos(lat1*Math.PI/180) * Math.cos(lat2*Math.PI/180) * Math.sin(dLon/2) * Math.sin(dLon/2);
-        var c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
-        var d = R * c;
-        return d;
     }
     </script>
 </body>

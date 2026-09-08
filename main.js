@@ -1,11 +1,5 @@
-// Auth init
-fetch('/auth/me').then(r => { if (r.ok) return r.json(); throw 'not logged in'; })
-    .then(u => {
-        const ui = document.getElementById('userInfo');
-        const lb = document.getElementById('logoutBtn');
-        if (ui) ui.textContent = '👤 ' + u.name;
-        if (lb) lb.style.display = '';
-    }).catch(() => {});
+// Auth init (wspólne w common.js)
+initNavUser();
 
 // Inicjalizacja mapy
 const map = L.map('map').setView([52.2297, 21.0122], 10); // Warszawa jako domyślna lokalizacja
@@ -197,51 +191,6 @@ function clearCurrentGpxLayer() {
 
 
 
-// Funkcja do liczenia statystyk z punktów GPX
-function getGpxStats(trkpts) {
-    if (!trkpts || trkpts.length === 0) return null;
-    let dist = 0;
-    let maxSpeed = 0;
-    let sumSpeed = 0;
-    let speedCount = 0;
-    let startTime = null;
-    let endTime = null;
-    let prev = null;
-    for (let i = 0; i < trkpts.length; i++) {
-        const pt = trkpts[i];
-        const lat = parseFloat(pt.getAttribute('lat'));
-        const lon = parseFloat(pt.getAttribute('lon'));
-        const ele = pt.getElementsByTagName('ele')[0];
-        const timeEl = pt.getElementsByTagName('time')[0];
-        const time = timeEl ? new Date(timeEl.textContent) : null;
-        if (i === 0) startTime = time;
-        if (i === trkpts.length-1) endTime = time;
-        if (prev && time && prev.time) {
-            const d = getDistanceFromLatLonInM(lat, lon, prev.lat, prev.lon);
-            dist += d;
-            const dt = (time - prev.time) / 1000; // sekundy
-            if (dt > 0 && d > 0) {
-                const speed = d / dt; // m/s
-                if (speed < 20) { // odrzucamy ewidentne błędy (np. teleporty)
-                    sumSpeed += speed;
-                    speedCount++;
-                    if (speed > maxSpeed) maxSpeed = speed;
-                }
-            }
-        }
-        prev = {lat, lon, time};
-    }
-    const duration = (endTime && startTime) ? (endTime - startTime)/1000 : 0;
-    return {
-        start: startTime,
-        end: endTime,
-        duration,
-        dist,
-        avgSpeed: speedCount ? sumSpeed/speedCount : 0,
-        maxSpeed
-    };
-}
-
 // Funkcja do wyświetlania statystyk pod mapą
 function showStats(stats, filename, error) {
     const info = document.getElementById('gpxInfo');
@@ -277,19 +226,4 @@ function showStats(stats, filename, error) {
         Długość: ${fmtDist(stats.dist)}<br>
         Śr. prędkość: ${fmtSpeed(stats.avgSpeed)}<br>
         Maks. prędkość: ${fmtSpeed(stats.maxSpeed)}<br>`;
-}
-
-// Funkcja do obliczania odległości Haversine
-function getDistanceFromLatLonInM(lat1,lon1,lat2,lon2) {
-    var R = 6371000; // m
-    var dLat = (lat2-lat1)*Math.PI/180;
-    var dLon = (lon2-lon1)*Math.PI/180;
-    var a = 
-      Math.sin(dLat/2) * Math.sin(dLat/2) +
-      Math.cos(lat1*Math.PI/180) * Math.cos(lat2*Math.PI/180) * 
-      Math.sin(dLon/2) * Math.sin(dLon/2)
-      ;
-    var c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)); 
-    var d = R * c;
-    return d;
 }

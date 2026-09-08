@@ -4,13 +4,11 @@ using GpxApi.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using System.Security.Claims;
-using System.Text.Json;
 
 [ApiController]
 [Route("api/activities")]
 [Authorize]
-public class ActivitiesController : ControllerBase
+public class ActivitiesController : ApiControllerBase
 {
     private readonly AppDbContext _db;
     private readonly EncryptionService _encryption;
@@ -24,12 +22,6 @@ public class ActivitiesController : ControllerBase
         _httpClientFactory = httpClientFactory;
         _syncService = syncService;
     }
-
-    private int GetUserId() =>
-        int.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
-
-    private long GetStravaAthleteId() =>
-        long.Parse(User.FindFirstValue("StravaAthleteId")!);
 
     [HttpGet("list")]
     public async Task<IActionResult> List()

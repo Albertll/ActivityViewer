@@ -173,13 +173,4 @@ public class StravaController : ControllerBase
         return Ok(new { userId, athleteId, name });
     }
 
-    /// <summary>
-    /// Endpoint kompatybilny wstecz dla wymiany tokenu (legacy, dla frontendu Strava bezpośredniego)
-    /// </summary>
-    [HttpGet("/strava-exchange-token")]
-    public async Task<IActionResult> ExchangeTokenLegacy([FromQuery] string code)
-    {
-        // Przekieruj na nowy flow
-        return await Callback(code);
-    }
 }

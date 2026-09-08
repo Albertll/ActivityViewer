@@ -3,13 +3,12 @@ using GpxApi.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using System.Security.Claims;
 using System.Text.Json;
 
 [ApiController]
 [Route("api/intervals")]
 [Authorize]
-public class IntervalsController : ControllerBase
+public class IntervalsController : ApiControllerBase
 {
     private readonly AppDbContext _db;
 
@@ -17,9 +16,6 @@ public class IntervalsController : ControllerBase
     {
         _db = db;
     }
-
-    private int GetUserId() =>
-        int.Parse(User.FindFirstValue(ClaimTypes.NameIdentifier)!);
 
     [HttpGet("{activityId}")]
     public async Task<IActionResult> Get(long activityId)
