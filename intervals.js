@@ -12,15 +12,26 @@
     // Kolory etapów
     const stageColors = {
         'warmup': '#ffc107',
+        'sprint': '#9b59b6',
         'run': '#28a745',
+        'jog': '#8bc34a',
         'walk': '#dc3545',
         'cooldown': '#17a2b8'
     };
     const stageNames = {
         'warmup': 'Rozgrzewka',
+        'sprint': 'Sprint',
         'run': 'Bieg',
+        'jog': 'Trucht',
         'walk': 'Marsz',
         'cooldown': 'Schłodzenie'
+    };
+    // Nazwy do wierszy podsumowań (liczba mnoga)
+    const stageNamesPlural = {
+        'sprint': 'SPRINTY',
+        'run': 'BIEGI',
+        'jog': 'TRUCHTY',
+        'walk': 'MARSZE'
     };
 
     // --- INICJALIZACJA ---
@@ -195,7 +206,9 @@
             <span style="font-weight:bold; min-width:30px;">#${container.children.length + 1}</span>
             <select class="stage-type" onchange="updateStageColor(${id})">
                 <option value="warmup" ${type === 'warmup' ? 'selected' : ''}>🔥 Rozgrzewka</option>
+                <option value="sprint" ${type === 'sprint' ? 'selected' : ''}>⚡ Sprint</option>
                 <option value="run" ${type === 'run' ? 'selected' : ''}>🏃 Bieg</option>
+                <option value="jog" ${type === 'jog' ? 'selected' : ''}>🐢 Trucht</option>
                 <option value="walk" ${type === 'walk' ? 'selected' : ''}>🚶 Marsz</option>
                 <option value="cooldown" ${type === 'cooldown' ? 'selected' : ''}>❄️ Schłodzenie</option>
             </select>
@@ -237,17 +250,19 @@
         const walkTime = parseFloat(document.getElementById('templateWalkTime').value);
         const warmupTime = parseFloat(document.getElementById('templateWarmup').value);
         const cooldownTime = parseFloat(document.getElementById('templateCooldown').value);
-        
+        const fastType = document.getElementById('templateFastType').value;
+        const restType = document.getElementById('templateRestType').value;
+
         // Rozgrzewka
         if (warmupTime > 0) {
             addStage('warmup', warmupTime, 'Rozgrzewka');
         }
-        
+
         // Interwały
         for (let i = 1; i <= reps; i++) {
-            addStage('run', runTime, `Bieg ${i}`);
+            addStage(fastType, runTime, `${stageNames[fastType]} ${i}`);
             if (i < reps && walkTime > 0) {
-                addStage('walk', walkTime, `Marsz ${i}`);
+                addStage(restType, walkTime, `${stageNames[restType]} ${i}`);
             }
         }
         
@@ -334,16 +349,18 @@
         }
         
         const results = calculateStageStats(stages);
+
+        // Pokaż panele PRZED rysowaniem - Leaflet i Chart.js źle mierzą rozmiar ukrytych (display:none) kontenerów
+        document.getElementById('statsPanel').style.display = 'block';
+        document.getElementById('mapPanel').style.display = 'block';
+        document.getElementById('chartPanel').style.display = 'block';
+        document.getElementById('chartGpsPanel').style.display = 'block';
+
         displayStats(results);
         displayMap(results);
         displayChart(results);
         displayChartGps(results);
         displayChartElevation(results);
-        
-        document.getElementById('statsPanel').style.display = 'block';
-        document.getElementById('mapPanel').style.display = 'block';
-        document.getElementById('chartPanel').style.display = 'block';
-        document.getElementById('chartGpsPanel').style.display = 'block';
 
         // Zapisz interwały na serwer
         if (currentActivity && currentActivity.id) {
@@ -468,26 +485,13 @@
         let totalDistance = 0;
         let totalGpsDistance = 0;
         let totalTime = 0;
-        let totalRunDistance = 0;
-        let totalRunGpsDistance = 0;
-        let totalRunTime = 0;
-        let totalRunHRWeightedSum = 0;
-        let totalRunHRWeightedTime = 0;
-        let allRunMaxHR = [];
-        let allRunMinHR = [];
-        let totalWalkDistance = 0;
-        let totalWalkGpsDistance = 0;
-        let totalWalkTime = 0;
-        let totalWalkHRWeightedSum = 0;
-        let totalWalkHRWeightedTime = 0;
-        let allWalkMaxHR = [];
-        let allWalkMinHR = [];
         let totalHRWeightedSum = 0;
         let totalHRWeightedTime = 0;
         let allMaxHR = [];
         let totalElev = null;
-        let totalRunElev = null;
-        let totalWalkElev = null;
+
+        // Sumy per typ etapu (bieg/sprint/trucht/marsz liczone osobno)
+        const byType = {};
         
         results.forEach(r => {
             const row = document.createElement('tr');
@@ -518,26 +522,15 @@
             totalTime += r.actualDuration;
             if (r.elevChange !== null) totalElev = (totalElev ?? 0) + r.elevChange;
 
-            if (r.type === 'run') {
-                totalRunDistance += r.distance;
-                totalRunGpsDistance += r.gpsDistance;
-                totalRunTime += r.actualDuration;
-                if (r.elevChange !== null) totalRunElev = (totalRunElev ?? 0) + r.elevChange;
-                if (r.avgHR && r.actualDuration > 0) { totalRunHRWeightedSum += r.avgHR * r.actualDuration; totalRunHRWeightedTime += r.actualDuration; }
-                if (r.maxHR) allRunMaxHR.push(r.maxHR);
-                if (r.minHR) allRunMinHR.push(r.minHR);
-            }
-            
-            if (r.type === 'walk') {
-                totalWalkDistance += r.distance;
-                totalWalkGpsDistance += r.gpsDistance;
-                totalWalkTime += r.actualDuration;
-                if (r.elevChange !== null) totalWalkElev = (totalWalkElev ?? 0) + r.elevChange;
-                if (r.avgHR && r.actualDuration > 0) { totalWalkHRWeightedSum += r.avgHR * r.actualDuration; totalWalkHRWeightedTime += r.actualDuration; }
-                if (r.maxHR) allWalkMaxHR.push(r.maxHR);
-                if (r.minHR) allWalkMinHR.push(r.minHR);
-            }
-            
+            const t = byType[r.type] ??= { distance: 0, gpsDistance: 0, time: 0, hrSum: 0, hrTime: 0, minHR: [], maxHR: [], elev: null };
+            t.distance += r.distance;
+            t.gpsDistance += r.gpsDistance;
+            t.time += r.actualDuration;
+            if (r.elevChange !== null) t.elev = (t.elev ?? 0) + r.elevChange;
+            if (r.avgHR && r.actualDuration > 0) { t.hrSum += r.avgHR * r.actualDuration; t.hrTime += r.actualDuration; }
+            if (r.minHR) t.minHR.push(r.minHR);
+            if (r.maxHR) t.maxHR.push(r.maxHR);
+
             if (r.avgHR && r.actualDuration > 0) {
                 totalHRWeightedSum += r.avgHR * r.actualDuration;
                 totalHRWeightedTime += r.actualDuration;
@@ -567,47 +560,28 @@
         `;
         tbody.appendChild(totalRow);
         
-        // Wiersz sumy tylko dla biegów
-        if (totalRunDistance > 0) {
-            const runRow = document.createElement('tr');
-            runRow.className = 'summary-row';
-            runRow.style.background = '#c8e6c9';
-            runRow.innerHTML = `
-                <td colspan="3"><strong>SUMA BIEGI</strong></td>
+        // Wiersze sum per typ etapu (kolejność wg intensywności; rozgrzewka/schłodzenie bez sumy)
+        ['sprint', 'run', 'jog', 'walk'].forEach(type => {
+            const t = byType[type];
+            if (!t || t.distance <= 0) return;
+            const row = document.createElement('tr');
+            row.className = 'summary-row';
+            row.style.background = hexToRgba(stageColors[type], 0.22);
+            row.innerHTML = `
+                <td colspan="3"><strong>SUMA ${stageNamesPlural[type]}</strong></td>
                 <td>-</td>
-                <td>${formatTime(totalRunTime)}</td>
-                <td>${totalRunDistance.toFixed(0)}</td>
-                <td>${totalRunGpsDistance.toFixed(0)}</td>
-                <td>${formatElev(totalRunElev)}</td>
-                <td>${formatPace(totalRunTime, totalRunDistance)}</td>
-                <td>${formatPace(totalRunTime, totalRunGpsDistance)}</td>
-                <td>${totalRunHRWeightedTime > 0 ? Math.round(totalRunHRWeightedSum / totalRunHRWeightedTime) : '-'}</td>
-                <td>${allRunMinHR.length > 0 ? Math.min(...allRunMinHR) : '-'}</td>
-                <td>${allRunMaxHR.length > 0 ? Math.max(...allRunMaxHR) : '-'}</td>
+                <td>${formatTime(t.time)}</td>
+                <td>${t.distance.toFixed(0)}</td>
+                <td>${t.gpsDistance.toFixed(0)}</td>
+                <td>${formatElev(t.elev)}</td>
+                <td>${formatPace(t.time, t.distance)}</td>
+                <td>${formatPace(t.time, t.gpsDistance)}</td>
+                <td>${t.hrTime > 0 ? Math.round(t.hrSum / t.hrTime) : '-'}</td>
+                <td>${t.minHR.length > 0 ? Math.min(...t.minHR) : '-'}</td>
+                <td>${t.maxHR.length > 0 ? Math.max(...t.maxHR) : '-'}</td>
             `;
-            tbody.appendChild(runRow);
-        }
-        
-        // Wiersz sumy tylko dla marszów
-        if (totalWalkDistance > 0) {
-            const walkRow = document.createElement('tr');
-            walkRow.className = 'summary-row';
-            walkRow.style.background = '#f8d7da';
-            walkRow.innerHTML = `
-                <td colspan="3"><strong>SUMA MARSZE</strong></td>
-                <td>-</td>
-                <td>${formatTime(totalWalkTime)}</td>
-                <td>${totalWalkDistance.toFixed(0)}</td>
-                <td>${totalWalkGpsDistance.toFixed(0)}</td>
-                <td>${formatElev(totalWalkElev)}</td>
-                <td>${formatPace(totalWalkTime, totalWalkDistance)}</td>
-                <td>${formatPace(totalWalkTime, totalWalkGpsDistance)}</td>
-                <td>${totalWalkHRWeightedTime > 0 ? Math.round(totalWalkHRWeightedSum / totalWalkHRWeightedTime) : '-'}</td>
-                <td>${allWalkMinHR.length > 0 ? Math.min(...allWalkMinHR) : '-'}</td>
-                <td>${allWalkMaxHR.length > 0 ? Math.max(...allWalkMaxHR) : '-'}</td>
-            `;
-            tbody.appendChild(walkRow);
-        }
+            tbody.appendChild(row);
+        });
     }
 
     function displayMap(results) {
@@ -646,6 +620,14 @@
         if (allLatLngs.length > 0) {
             map.fitBounds(L.latLngBounds(allLatLngs));
         }
+
+        // Zabezpieczenie: kontener mógł dopiero co stać się widoczny - przelicz rozmiar i dopasuj widok
+        setTimeout(() => {
+            map.invalidateSize();
+            if (allLatLngs.length > 0) {
+                map.fitBounds(L.latLngBounds(allLatLngs));
+            }
+        }, 100);
     }
 
     function displayChart(results) {

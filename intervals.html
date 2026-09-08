@@ -43,7 +43,9 @@
         .stats-table tr:hover { background: #f5f5f5; }
         .stats-table .summary-row { background: #e8f4fd; font-weight: bold; }
         .stats-table .warmup { background: #fff3cd; }
+        .stats-table .sprint { background: #ead9f2; }
         .stats-table .run { background: #d4edda; }
+        .stats-table .jog { background: #e9f5d9; }
         .stats-table .walk { background: #f8d7da; }
         .stats-table .cooldown { background: #d1ecf1; }
         
@@ -119,11 +121,25 @@
                             <input type="number" id="templateReps" value="5" min="1" max="20" style="width:80px; padding:0.4em;">
                         </label>
                         <label style="display:flex; flex-direction:column;">
-                            <span style="font-size:0.9em; color:#666; margin-bottom:0.3em;">Czas biegu [min]:</span>
+                            <span style="font-size:0.9em; color:#666; margin-bottom:0.3em;">Typ odcinka:</span>
+                            <select id="templateFastType" style="padding:0.4em;">
+                                <option value="run" selected>🏃 Bieg</option>
+                                <option value="sprint">⚡ Sprint</option>
+                            </select>
+                        </label>
+                        <label style="display:flex; flex-direction:column;">
+                            <span style="font-size:0.9em; color:#666; margin-bottom:0.3em;">Czas odcinka [min]:</span>
                             <input type="number" id="templateRunTime" value="4" min="0.5" max="30" step="0.5" style="width:80px; padding:0.4em;">
                         </label>
                         <label style="display:flex; flex-direction:column;">
-                            <span style="font-size:0.9em; color:#666; margin-bottom:0.3em;">Czas marszu [min]:</span>
+                            <span style="font-size:0.9em; color:#666; margin-bottom:0.3em;">Typ przerwy:</span>
+                            <select id="templateRestType" style="padding:0.4em;">
+                                <option value="walk" selected>🚶 Marsz</option>
+                                <option value="jog">🐢 Trucht</option>
+                            </select>
+                        </label>
+                        <label style="display:flex; flex-direction:column;">
+                            <span style="font-size:0.9em; color:#666; margin-bottom:0.3em;">Czas przerwy [min]:</span>
                             <input type="number" id="templateWalkTime" value="1" min="0.5" max="10" step="0.5" style="width:80px; padding:0.4em;">
                         </label>
                         <label style="display:flex; flex-direction:column;">
@@ -154,7 +170,9 @@
             
             <div class="legend">
                 <div class="legend-item"><div class="legend-color" style="background:#fff3cd;"></div> Rozgrzewka</div>
+                <div class="legend-item"><div class="legend-color" style="background:#ead9f2;"></div> Sprint</div>
                 <div class="legend-item"><div class="legend-color" style="background:#d4edda;"></div> Bieg</div>
+                <div class="legend-item"><div class="legend-color" style="background:#e9f5d9;"></div> Trucht</div>
                 <div class="legend-item"><div class="legend-color" style="background:#f8d7da;"></div> Marsz/odpoczynek</div>
                 <div class="legend-item"><div class="legend-color" style="background:#d1ecf1;"></div> Schłodzenie</div>
             </div>
