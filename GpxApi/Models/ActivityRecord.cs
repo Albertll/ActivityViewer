@@ -30,6 +30,16 @@ public class ActivityRecord
     public double TotalElevationGain { get; set; }
 
     /// <summary>
+    /// Średnia prędkość [m/s] z metadanych Stravy (null = jeszcze nie uzupełnione)
+    /// </summary>
+    public double? AverageSpeed { get; set; }
+
+    /// <summary>
+    /// Maksymalna prędkość [m/s] z metadanych Stravy (null = jeszcze nie uzupełnione)
+    /// </summary>
+    public double? MaxSpeed { get; set; }
+
+    /// <summary>
     /// Zaszyfrowany pełny JSON aktywności ze Stravy (AES-256-CBC)
     /// </summary>
     public byte[]? EncryptedActivityJson { get; set; }

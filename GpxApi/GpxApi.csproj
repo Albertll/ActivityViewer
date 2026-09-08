@@ -14,7 +14,10 @@
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
     <PackageReference Include="Swashbuckle.AspNetCore" Version="8.1.2" />
-    <PackageReference Include="System.IO.Abstractions" Version="22.0.14" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="GpxApi.Tests" />
   </ItemGroup>
 
   <ItemGroup>

@@ -8,6 +8,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using System.Net.Http;
 using System.Security.Claims;
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Threading.Tasks;
 
@@ -41,20 +42,38 @@ public class StravaController : ControllerBase
     [HttpGet("login")]
     public IActionResult Login()
     {
+        // Parametr state chroni callback przed CSRF (podstawieniem cudzego code)
+        var state = Convert.ToHexString(RandomNumberGenerator.GetBytes(16));
+        Response.Cookies.Append(OAuthStateCookie, state, new CookieOptions
+        {
+            HttpOnly = true,
+            SameSite = SameSiteMode.Lax,
+            Secure = Request.IsHttps,
+            MaxAge = TimeSpan.FromMinutes(10),
+            IsEssential = true
+        });
+
         var clientId = _configuration["Strava:ClientId"];
         var redirectUri = $"{Request.Scheme}://{Request.Host}/auth/callback";
-        var url = $"https://www.strava.com/oauth/authorize?client_id={clientId}&response_type=code&redirect_uri={Uri.EscapeDataString(redirectUri)}&approval_prompt=auto&scope=activity:read_all";
+        var url = $"https://www.strava.com/oauth/authorize?client_id={clientId}&response_type=code&redirect_uri={Uri.EscapeDataString(redirectUri)}&approval_prompt=auto&scope=activity:read_all&state={state}";
         return Redirect(url);
     }
 
+    private const string OAuthStateCookie = "strava_oauth_state";
+
     /// <summary>
-    /// Callback po zalogowaniu przez Stravę - wymiana kodu na token, tworzenie sesji
+    /// Callback po zalogowaniu przez Stravę - walidacja state, wymiana kodu na token, tworzenie sesji
     /// </summary>
     [HttpGet("callback")]
-    public async Task<IActionResult> Callback([FromQuery] string code)
+    public async Task<IActionResult> Callback([FromQuery] string code, [FromQuery] string? state = null)
     {
         if (string.IsNullOrEmpty(code))
             return BadRequest("Brak code");
+
+        var expectedState = Request.Cookies[OAuthStateCookie];
+        Response.Cookies.Delete(OAuthStateCookie);
+        if (string.IsNullOrEmpty(expectedState) || state != expectedState)
+            return BadRequest("Nieprawidłowy state OAuth - rozpocznij logowanie od /auth/login");
 
         var clientId = _configuration["Strava:ClientId"];
         var clientSecret = _configuration["Strava:ClientSecret"];

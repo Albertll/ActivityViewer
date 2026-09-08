@@ -39,8 +39,8 @@ public class GpxController : ApiControllerBase
                 start = a.StartDate,
                 dist = a.Distance,
                 duration = a.MovingTime,
-                avgSpeed = a.MovingTime > 0 ? a.Distance / a.MovingTime : 0,
-                maxSpeed = 0.0 // nie mamy tej wartości w metadanych
+                avgSpeed = a.AverageSpeed ?? (a.MovingTime > 0 ? a.Distance / a.MovingTime : 0),
+                maxSpeed = a.MaxSpeed ?? 0
             })
             .ToListAsync();
 
@@ -83,22 +83,15 @@ public class GpxController : ApiControllerBase
         if (activity?.EncryptedGpxData == null || activity.GpxIV == null)
             return NotFound();
 
-        var gpxContent = _encryption.Decrypt(activity.EncryptedGpxData, activity.GpxIV, athleteId);
-        return Content(gpxContent, "application/gpx+xml");
-    }
-
-    [HttpHead("{filename}")]
-    public async Task<IActionResult> Head([FromRoute] string filename)
-    {
-        var userId = GetUserId();
-        var idStr = filename.Replace(".gpx", "");
-        if (!long.TryParse(idStr, out var activityId))
-            return BadRequest("Nieprawidłowy plik");
-
-        var exists = await _db.Activities
-            .AnyAsync(a => a.UserId == userId && a.StravaActivityId == activityId && a.EncryptedGpxData != null);
-
-        return exists ? Ok() : NotFound();
+        try
+        {
+            var gpxContent = _encryption.Decrypt(activity.EncryptedGpxData, activity.GpxIV, athleteId);
+            return Content(gpxContent, "application/gpx+xml");
+        }
+        catch (Exception)
+        {
+            return StatusCode(500, new { error = "Nie można odszyfrować GPX - sprawdź Encryption:MasterKey" });
+        }
     }
 
     /// <summary>

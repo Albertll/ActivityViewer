@@ -60,8 +60,15 @@ public class ActivitiesController : ApiControllerBase
 
         if (activity.EncryptedActivityJson != null && activity.ActivityJsonIV != null)
         {
-            var json = _encryption.Decrypt(activity.EncryptedActivityJson, activity.ActivityJsonIV, athleteId);
-            return Content(json, "application/json");
+            try
+            {
+                var json = _encryption.Decrypt(activity.EncryptedActivityJson, activity.ActivityJsonIV, athleteId);
+                return Content(json, "application/json");
+            }
+            catch (Exception)
+            {
+                return StatusCode(500, new { error = "Nie można odszyfrować danych aktywności - sprawdź Encryption:MasterKey" });
+            }
         }
 
         return Ok(new
@@ -100,12 +107,19 @@ public class ActivitiesController : ApiControllerBase
         if (activity?.Stream == null)
             return NotFound(new { error = "Brak danych stream" });
 
-        var decryptedJson = _encryption.Decrypt(
-            activity.Stream.EncryptedData,
-            activity.Stream.IV,
-            athleteId);
+        try
+        {
+            var decryptedJson = _encryption.Decrypt(
+                activity.Stream.EncryptedData,
+                activity.Stream.IV,
+                athleteId);
 
-        return Content(decryptedJson, "application/json");
+            return Content(decryptedJson, "application/json");
+        }
+        catch (Exception)
+        {
+            return StatusCode(500, new { error = "Nie można odszyfrować streamu - sprawdź Encryption:MasterKey" });
+        }
     }
 
     /// <summary>
@@ -119,8 +133,19 @@ public class ActivitiesController : ApiControllerBase
         if (user?.EncryptedAccessToken == null)
             return BadRequest(new { error = "Brak tokenu Strava - zaloguj się ponownie przez Stravę" });
 
-        _syncService.TriggerSync(userId, user.StravaAthleteId, !user.IsFirstSyncComplete);
-        return Ok(new { success = true });
+        var syncTask = _syncService.TriggerSyncAndWaitAsync(userId, user.StravaAthleteId, !user.IsFirstSyncComplete);
+        var finished = await Task.WhenAny(syncTask, Task.Delay(TimeSpan.FromSeconds(60)));
+        if (finished != syncTask)
+            return Ok(new { queued = true }); // pierwsza pełna synchronizacja może trwać dłużej - kończy się w tle
+
+        try
+        {
+            return Ok(new { added = await syncTask });
+        }
+        catch (Exception)
+        {
+            return StatusCode(502, new { error = "Synchronizacja ze Stravą nie powiodła się" });
+        }
     }
 
     /// <summary>

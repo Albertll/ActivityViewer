@@ -26,7 +26,7 @@ public class StravaActivitySyncService : BackgroundService
     private readonly SemaphoreSlim _signal = new(0);
     private readonly SemaphoreSlim _refreshLock = new(1, 1);
 
-    public record SyncRequest(int UserId, long StravaAthleteId, bool IsFirstLogin);
+    public record SyncRequest(int UserId, long StravaAthleteId, bool IsFirstLogin, TaskCompletionSource<int>? Completion = null);
 
     public StravaActivitySyncService(
         IHttpClientFactory httpClientFactory,
@@ -46,6 +46,18 @@ public class StravaActivitySyncService : BackgroundService
         _signal.Release();
     }
 
+    /// <summary>
+    /// Jak TriggerSync, ale zwraca Task kończący się liczbą nowo dodanych aktywności -
+    /// pozwala kontrolerowi poczekać na wynik synchronizacji.
+    /// </summary>
+    public Task<int> TriggerSyncAndWaitAsync(int userId, long stravaAthleteId, bool isFirstLogin)
+    {
+        var completion = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        _syncQueue.Enqueue(new SyncRequest(userId, stravaAthleteId, isFirstLogin, completion));
+        _signal.Release();
+        return completion.Task;
+    }
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         // Uruchom timer do periodycznego pobierania streamów i GPX co 15 minut
@@ -61,11 +73,13 @@ public class StravaActivitySyncService : BackgroundService
                 {
                     _logger.LogInformation("[StravaSync] Start sync for userId={UserId} athleteId={AthleteId} firstLogin={First}",
                         request.UserId, request.StravaAthleteId, request.IsFirstLogin);
-                    await SyncActivityList(request, stoppingToken);
+                    var added = await SyncActivityList(request, stoppingToken);
+                    request.Completion?.TrySetResult(added);
                     _logger.LogInformation("[StravaSync] Sync finished for userId={UserId}", request.UserId);
                 }
                 catch (Exception ex)
                 {
+                    request.Completion?.TrySetException(ex);
                     _logger.LogError(ex, "Błąd synchronizacji aktywności Strava dla userId={UserId}", request.UserId);
                 }
             }
@@ -77,8 +91,9 @@ public class StravaActivitySyncService : BackgroundService
     /// Pierwsze logowanie: pobiera WSZYSTKIE strony.
     /// Kolejne logowania: pobiera tylko stronę 1 i dodaje nowe.
     /// Nie pobiera streamów ani GPX - to robi PeriodicStreamGpxSync lub on-demand.
+    /// Zwraca liczbę nowo dodanych aktywności.
     /// </summary>
-    private async Task SyncActivityList(SyncRequest request, CancellationToken ct)
+    private async Task<int> SyncActivityList(SyncRequest request, CancellationToken ct)
     {
         using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
@@ -89,7 +104,7 @@ public class StravaActivitySyncService : BackgroundService
         if (user == null || accessToken == null)
         {
             _logger.LogWarning("[StravaSync] Brak ważnego tokenu Strava dla userId={UserId} - pomijam sync listy", request.UserId);
-            return;
+            return 0;
         }
 
         var client = _httpClientFactory.CreateClient();
@@ -139,8 +154,12 @@ public class StravaActivitySyncService : BackgroundService
                     Type = act.TryGetProperty("type", out var t) ? t.GetString() : null,
                     Distance = act.TryGetProperty("distance", out var d) ? d.GetDouble() : 0,
                     MovingTime = act.TryGetProperty("moving_time", out var mt) ? mt.GetInt32() : 0,
-                    StartDate = act.TryGetProperty("start_date", out var sd) ? DateTime.Parse(sd.GetString()!) : null,
-                    TotalElevationGain = act.TryGetProperty("total_elevation_gain", out var eg) ? eg.GetDouble() : 0
+                    StartDate = act.TryGetProperty("start_date", out var sd)
+                        ? DateTime.Parse(sd.GetString()!, CultureInfo.InvariantCulture, DateTimeStyles.AdjustToUniversal)
+                        : null,
+                    TotalElevationGain = act.TryGetProperty("total_elevation_gain", out var eg) ? eg.GetDouble() : 0,
+                    AverageSpeed = act.TryGetProperty("average_speed", out var avgSp) ? avgSp.GetDouble() : (double?)null,
+                    MaxSpeed = act.TryGetProperty("max_speed", out var maxSp) ? maxSp.GetDouble() : (double?)null
                 };
 
                 db.Activities.Add(actRecord);
@@ -171,6 +190,7 @@ public class StravaActivitySyncService : BackgroundService
         }
 
         _logger.LogInformation("[StravaSync] Zapisano {Count} nowych aktywności (metadane) dla userId={UserId}", newCount, request.UserId);
+        return newCount;
     }
 
     /// <summary>
@@ -238,6 +258,11 @@ public class StravaActivitySyncService : BackgroundService
                     await db.SaveChangesAsync(ct);
                     downloaded++;
                 }
+                catch (StravaRateLimitException)
+                {
+                    _logger.LogWarning("[StravaSync] Limit zapytań Strava (429) - przerywam cykl, wznowienie za 15 min");
+                    return;
+                }
                 catch (Exception ex)
                 {
                     _logger.LogWarning(ex, "[StravaSync] Błąd pobierania stream/GPX dla aktywności {Id}", activity.StravaActivityId);
@@ -267,6 +292,28 @@ public class StravaActivitySyncService : BackgroundService
                         _logger.LogWarning(ex, "[StravaSync] Błąd generowania GPX dla aktywności {Id}", activity.StravaActivityId);
                     }
                 }
+            }
+
+            // Jednorazowe uzupełnienie prędkości z już pobranych JSON-ów (backfill po dodaniu kolumn AverageSpeed/MaxSpeed)
+            var speedBackfill = await db.Activities
+                .Where(a => a.UserId == user.Id && a.EncryptedActivityJson != null && a.MaxSpeed == null)
+                .Take(200)
+                .ToListAsync(ct);
+
+            foreach (var activity in speedBackfill)
+            {
+                try
+                {
+                    var json = encryption.Decrypt(activity.EncryptedActivityJson!, activity.ActivityJsonIV!, user.StravaAthleteId);
+                    FillSpeedsFromActivityJson(activity, json);
+                }
+                catch { /* uszkodzony wpis - oznaczamy niżej, żeby nie ponawiać */ }
+                activity.MaxSpeed ??= 0;
+            }
+            if (speedBackfill.Count > 0)
+            {
+                await db.SaveChangesAsync(ct);
+                _logger.LogInformation("[StravaSync] Backfill prędkości: uzupełniono {Count} aktywności dla userId={UserId}", speedBackfill.Count, user.Id);
             }
 
             _logger.LogInformation("[StravaSync] Periodic sync: pobrano {Count} streamów/GPX dla userId={UserId}", downloaded, user.Id);
@@ -315,12 +362,15 @@ public class StravaActivitySyncService : BackgroundService
         if (activity.EncryptedActivityJson == null)
         {
             var actResp = await client.GetAsync($"https://www.strava.com/api/v3/activities/{activity.StravaActivityId}", ct);
+            if (actResp.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+                throw new StravaRateLimitException();
             if (actResp.IsSuccessStatusCode)
             {
                 var actJson = await actResp.Content.ReadAsStringAsync(ct);
                 var (encActJson, actJsonIv) = encryption.Encrypt(actJson, user.StravaAthleteId);
                 activity.EncryptedActivityJson = encActJson;
                 activity.ActivityJsonIV = actJsonIv;
+                FillSpeedsFromActivityJson(activity, actJson);
             }
             else
             {
@@ -334,6 +384,8 @@ public class StravaActivitySyncService : BackgroundService
         {
             var streamUrl = $"https://www.strava.com/api/v3/activities/{activity.StravaActivityId}/streams?keys=latlng,time,altitude,heartrate,distance,velocity_smooth&key_by_type=true";
             var streamResp = await client.GetAsync(streamUrl, ct);
+            if (streamResp.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+                throw new StravaRateLimitException();
             if (!streamResp.IsSuccessStatusCode)
                 return false;
 
@@ -361,7 +413,7 @@ public class StravaActivitySyncService : BackgroundService
     /// wymienia refresh token na nowy komplet i zapisuje go w bazie.
     /// Zwraca null, gdy odświeżenie nie jest możliwe - wtedy potrzebne jest ponowne logowanie przez Stravę.
     /// </summary>
-    private async Task<string?> GetValidAccessTokenAsync(AppDbContext db, AppUser user, EncryptionService encryption, CancellationToken ct)
+    internal async Task<string?> GetValidAccessTokenAsync(AppDbContext db, AppUser user, EncryptionService encryption, CancellationToken ct)
     {
         if (user.EncryptedAccessToken == null)
             return null;
@@ -434,6 +486,25 @@ public class StravaActivitySyncService : BackgroundService
         }
     }
 
+    /// <summary>
+    /// Uzupełnia AverageSpeed/MaxSpeed [m/s] z JSON-a aktywności Stravy.
+    /// </summary>
+    private static void FillSpeedsFromActivityJson(ActivityRecord activity, string activityJson)
+    {
+        try
+        {
+            var root = JsonDocument.Parse(activityJson).RootElement;
+            if (root.TryGetProperty("average_speed", out var avg)) activity.AverageSpeed = avg.GetDouble();
+            if (root.TryGetProperty("max_speed", out var max)) activity.MaxSpeed = max.GetDouble();
+        }
+        catch { /* brak pól w JSON-ie nie jest błędem */ }
+    }
+
+    /// <summary>
+    /// Strava odpowiedziała 429 - limit zapytań wyczerpany, cykl należy przerwać.
+    /// </summary>
+    private sealed class StravaRateLimitException : Exception { }
+
     private void GenerateAndSaveGpx(ActivityRecord activity, string streamJson, EncryptionService encryption, long stravaAthleteId)
     {
         var streams = JsonDocument.Parse(streamJson).RootElement;
@@ -448,7 +519,7 @@ public class StravaActivitySyncService : BackgroundService
         activity.GpxIV = gpxIv;
     }
 
-    private string GenerateGpxFromStreams(ActivityRecord activity, JsonElement streams, string? activityJson)
+    internal string GenerateGpxFromStreams(ActivityRecord activity, JsonElement streams, string? activityJson)
     {
         var name = activity.Name ?? "Trasa";
         var startDate = activity.StartDate?.ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ");

@@ -59,6 +59,9 @@ builder.Services.AddAuthentication(CookieAuthenticationDefaults.AuthenticationSc
 builder.Services.AddSingleton<StravaActivitySyncService>();
 builder.Services.AddHostedService(provider => provider.GetRequiredService<StravaActivitySyncService>());
 
+// Automatyczna rejestracja webhooka Stravy (aktywna tylko przy skonfigurowanym Strava:WebhookCallbackUrl)
+builder.Services.AddHostedService<StravaWebhookRegistrationService>();
+
 var app = builder.Build();
 
 // Automatycznie utwórz/zaktualizuj bazę danych

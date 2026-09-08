@@ -101,22 +101,26 @@ document.addEventListener('DOMContentLoaded', loadUptime);
 
 // --- Ręczne dociągnięcie nowych aktywności ze Stravy ---
 
-// Sync działa w tle na serwerze; po chwili odświeża listę przekazaną w reloadList
+// Endpoint sync czeka na wynik i zwraca liczbę nowych aktywności
+// (albo {queued:true}, gdy pierwsza pełna synchronizacja trwa dłużej i kończy się w tle)
 async function syncStrava(btn, reloadList) {
+    const original = '🔄 Odśwież ze Stravy';
     btn.disabled = true;
     btn.textContent = 'Synchronizuję...';
     try {
         const res = await fetch('/api/activities/sync', { method: 'POST' });
         if (res.ok) {
-            await new Promise(r => setTimeout(r, 3000));
+            const data = await res.json().catch(() => ({}));
             if (reloadList) await reloadList();
-        } else {
-            const err = await res.json().catch(() => ({}));
-            alert('Błąd synchronizacji: ' + (err.error || res.status));
+            btn.textContent = data.queued ? '⏳ Sync trwa w tle...' : `✅ Nowe aktywności: ${data.added ?? 0}`;
+            setTimeout(() => { btn.textContent = original; btn.disabled = false; }, 4000);
+            return;
         }
+        const err = await res.json().catch(() => ({}));
+        alert('Błąd synchronizacji: ' + (err.error || res.status));
     } catch (e) {
         alert('Błąd połączenia z serwerem');
     }
     btn.disabled = false;
-    btn.textContent = '🔄 Odśwież ze Stravy';
+    btn.textContent = original;
 }

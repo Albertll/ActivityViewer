@@ -28,6 +28,11 @@ public class AppDbContext : DbContext
              .WithMany(u => u.Activities)
              .HasForeignKey(a => a.UserId)
              .OnDelete(DeleteBehavior.Cascade);
+            // StartDate trzymamy w UTC; kolumna datetime2 nie niesie strefy, więc oznaczamy Kind przy odczycie
+            e.Property(a => a.StartDate)
+             .HasConversion(
+                 v => v,
+                 v => v == null ? v : DateTime.SpecifyKind(v.Value, DateTimeKind.Utc));
         });
 
         modelBuilder.Entity<ActivityStream>(e =>
