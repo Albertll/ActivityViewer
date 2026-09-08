@@ -15,6 +15,7 @@ GpxApi/appsettings.json
 
 # Publish output (zawiera kopie appsettings.json z sekretami)
 wysylka/
+/wysylka.zip
 
 # Dane osobiste aktywności (trasy GPS, tokeny) sprzed migracji do bazy
 /activities/

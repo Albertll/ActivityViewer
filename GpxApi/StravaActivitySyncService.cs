@@ -11,6 +11,7 @@ using GpxApi.Data;
 using GpxApi.Models;
 using GpxApi.Services;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
@@ -20,24 +21,28 @@ public class StravaActivitySyncService : BackgroundService
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<StravaActivitySyncService> _logger;
     private readonly IServiceScopeFactory _scopeFactory;
+    private readonly IConfiguration _configuration;
     private readonly ConcurrentQueue<SyncRequest> _syncQueue = new();
     private readonly SemaphoreSlim _signal = new(0);
+    private readonly SemaphoreSlim _refreshLock = new(1, 1);
 
-    public record SyncRequest(int UserId, string AccessToken, long StravaAthleteId, bool IsFirstLogin);
+    public record SyncRequest(int UserId, long StravaAthleteId, bool IsFirstLogin);
 
     public StravaActivitySyncService(
         IHttpClientFactory httpClientFactory,
         ILogger<StravaActivitySyncService> logger,
-        IServiceScopeFactory scopeFactory)
+        IServiceScopeFactory scopeFactory,
+        IConfiguration configuration)
     {
         _httpClientFactory = httpClientFactory;
         _logger = logger;
         _scopeFactory = scopeFactory;
+        _configuration = configuration;
     }
 
-    public void TriggerSync(int userId, string accessToken, long stravaAthleteId, bool isFirstLogin)
+    public void TriggerSync(int userId, long stravaAthleteId, bool isFirstLogin)
     {
-        _syncQueue.Enqueue(new SyncRequest(userId, accessToken, stravaAthleteId, isFirstLogin));
+        _syncQueue.Enqueue(new SyncRequest(userId, stravaAthleteId, isFirstLogin));
         _signal.Release();
     }
 
@@ -77,6 +82,15 @@ public class StravaActivitySyncService : BackgroundService
     {
         using var scope = _scopeFactory.CreateScope();
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+        var encryption = scope.ServiceProvider.GetRequiredService<EncryptionService>();
+
+        var user = await db.Users.FirstOrDefaultAsync(u => u.Id == request.UserId, ct);
+        var accessToken = user == null ? null : await GetValidAccessTokenAsync(db, user, encryption, ct);
+        if (user == null || accessToken == null)
+        {
+            _logger.LogWarning("[StravaSync] Brak ważnego tokenu Strava dla userId={UserId} - pomijam sync listy", request.UserId);
+            return;
+        }
 
         var client = _httpClientFactory.CreateClient();
         int page = 1;
@@ -93,7 +107,7 @@ public class StravaActivitySyncService : BackgroundService
         while (!ct.IsCancellationRequested)
         {
             var url = $"https://www.strava.com/api/v3/athlete/activities?per_page={perPage}&page={page}";
-            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", request.AccessToken);
+            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
 
             var resp = await client.GetAsync(url, ct);
             if (!resp.IsSuccessStatusCode)
@@ -152,12 +166,8 @@ public class StravaActivitySyncService : BackgroundService
         // Oznacz pierwszą synchronizację jako zakończoną
         if (fetchAllPages)
         {
-            var user = await db.Users.FindAsync(request.UserId);
-            if (user != null)
-            {
-                user.IsFirstSyncComplete = true;
-                await db.SaveChangesAsync(ct);
-            }
+            user.IsFirstSyncComplete = true;
+            await db.SaveChangesAsync(ct);
         }
 
         _logger.LogInformation("[StravaSync] Zapisano {Count} nowych aktywności (metadane) dla userId={UserId}", newCount, request.UserId);
@@ -201,14 +211,10 @@ public class StravaActivitySyncService : BackgroundService
         {
             if (ct.IsCancellationRequested) break;
 
-            string accessToken;
-            try
+            var accessToken = await GetValidAccessTokenAsync(db, user, encryption, ct);
+            if (accessToken == null)
             {
-                accessToken = encryption.DecryptToken(user.EncryptedAccessToken!);
-            }
-            catch
-            {
-                _logger.LogWarning("[StravaSync] Nie można odszyfrować tokenu dla userId={UserId}", user.Id);
+                _logger.LogWarning("[StravaSync] Brak ważnego tokenu Strava dla userId={UserId} - pomijam", user.Id);
                 continue;
             }
 
@@ -318,9 +324,8 @@ public class StravaActivitySyncService : BackgroundService
         var user = await db.Users.FindAsync(userId);
         if (user?.EncryptedAccessToken == null) return false;
 
-        string accessToken;
-        try { accessToken = encryption.DecryptToken(user.EncryptedAccessToken); }
-        catch { return false; }
+        var accessToken = await GetValidAccessTokenAsync(db, user, encryption, CancellationToken.None);
+        if (accessToken == null) return false;
 
         var activity = await db.Activities
             .Include(a => a.Stream)
@@ -372,6 +377,84 @@ public class StravaActivitySyncService : BackgroundService
 
         await db.SaveChangesAsync();
         return true;
+    }
+
+    /// <summary>
+    /// Zwraca ważny access token użytkownika. Gdy token wygasł (lub wygasa w ciągu 5 minut),
+    /// wymienia refresh token na nowy komplet i zapisuje go w bazie.
+    /// Zwraca null, gdy odświeżenie nie jest możliwe - wtedy potrzebne jest ponowne logowanie przez Stravę.
+    /// </summary>
+    private async Task<string?> GetValidAccessTokenAsync(AppDbContext db, AppUser user, EncryptionService encryption, CancellationToken ct)
+    {
+        if (user.EncryptedAccessToken == null)
+            return null;
+
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        if (user.TokenExpiresAt.HasValue && user.TokenExpiresAt.Value > now + 300)
+        {
+            try { return encryption.DecryptToken(user.EncryptedAccessToken); }
+            catch { return null; }
+        }
+
+        if (user.EncryptedRefreshToken == null)
+        {
+            // Brak refresh tokenu (stare konto) - spróbuj obecnym access tokenem, może jeszcze działa
+            try { return encryption.DecryptToken(user.EncryptedAccessToken); }
+            catch { return null; }
+        }
+
+        await _refreshLock.WaitAsync(ct);
+        try
+        {
+            // Inna ścieżka mogła już odświeżyć token - sprawdź ponownie na świeżych danych z bazy
+            await db.Entry(user).ReloadAsync(ct);
+            now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+            if (user.EncryptedAccessToken != null && user.TokenExpiresAt.HasValue && user.TokenExpiresAt.Value > now + 300)
+            {
+                try { return encryption.DecryptToken(user.EncryptedAccessToken); }
+                catch { return null; }
+            }
+
+            string refreshToken;
+            try { refreshToken = encryption.DecryptToken(user.EncryptedRefreshToken!); }
+            catch { return null; }
+
+            var client = _httpClientFactory.CreateClient();
+            var content = new FormUrlEncodedContent(new[]
+            {
+                new KeyValuePair<string, string>("client_id", _configuration["Strava:ClientId"] ?? ""),
+                new KeyValuePair<string, string>("client_secret", _configuration["Strava:ClientSecret"] ?? ""),
+                new KeyValuePair<string, string>("grant_type", "refresh_token"),
+                new KeyValuePair<string, string>("refresh_token", refreshToken)
+            });
+
+            var resp = await client.PostAsync("https://www.strava.com/oauth/token", content, ct);
+            if (!resp.IsSuccessStatusCode)
+            {
+                _logger.LogWarning("[StravaSync] Odświeżenie tokenu Strava nie powiodło się dla userId={UserId}: {Code}", user.Id, resp.StatusCode);
+                return null;
+            }
+
+            var json = await resp.Content.ReadAsStringAsync(ct);
+            var root = JsonDocument.Parse(json).RootElement;
+            if (!root.TryGetProperty("access_token", out var at))
+                return null;
+
+            var newAccessToken = at.GetString()!;
+            user.EncryptedAccessToken = encryption.EncryptToken(newAccessToken);
+            if (root.TryGetProperty("refresh_token", out var rt) && rt.GetString() is { Length: > 0 } newRefresh)
+                user.EncryptedRefreshToken = encryption.EncryptToken(newRefresh);
+            if (root.TryGetProperty("expires_at", out var exp))
+                user.TokenExpiresAt = exp.GetInt64();
+
+            await db.SaveChangesAsync(ct);
+            _logger.LogInformation("[StravaSync] Odświeżono token Strava dla userId={UserId}", user.Id);
+            return newAccessToken;
+        }
+        finally
+        {
+            _refreshLock.Release();
+        }
     }
 
     private void GenerateAndSaveGpx(ActivityRecord activity, string streamJson, EncryptionService encryption, long stravaAthleteId)

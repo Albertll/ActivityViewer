@@ -87,4 +87,12 @@ app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();
 
+// Licznik czasu działania aplikacji (m.in. do podglądu usypiania na serwerze)
+var startedAtUtc = DateTime.UtcNow;
+app.MapGet("/api/uptime", () => Results.Ok(new
+{
+    startedAtUtc,
+    uptimeSeconds = (long)(DateTime.UtcNow - startedAtUtc).TotalSeconds
+}));
+
 app.Run();

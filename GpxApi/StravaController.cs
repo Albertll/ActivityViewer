@@ -141,8 +141,8 @@ public class StravaController : ControllerBase
         await HttpContext.SignInAsync(CookieAuthenticationDefaults.AuthenticationScheme, principal,
             new AuthenticationProperties { IsPersistent = true, ExpiresUtc = DateTimeOffset.UtcNow.AddDays(30) });
 
-        // Uruchom synchronizację aktywności w tle
-        _syncService.TriggerSync(user.Id, accessToken, athleteId, isFirstLogin);
+        // Uruchom synchronizację aktywności w tle (token pobierze z bazy, odświeży jeśli trzeba)
+        _syncService.TriggerSync(user.Id, athleteId, isFirstLogin);
 
         return Redirect("/intervals.html");
     }

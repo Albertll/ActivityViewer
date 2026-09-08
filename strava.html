@@ -27,10 +27,12 @@
       <a href="strava.html" style="color:#fff; text-decoration:none;">Strava</a>
       <a href="intervals.html" style="color:#fff; text-decoration:none;">Interwały</a>
       <span id="userInfo" style="margin-left:auto; font-size:0.9em;"></span>
+      <span id="uptimeInfo" style="font-size:0.85em; color:#aaa;"></span>
       <a id="logoutBtn" href="/auth/logout" style="color:#ff6b6b; text-decoration:none; font-size:0.9em; display:none;">Wyloguj</a>
     </nav>
     <h1>Aktywności Strava</h1>
     <button id="stravaLoginBtn" onclick="window.location.href='/auth/login'" style="margin-left:1em;">Zaloguj przez Strava</button>
+    <button id="syncBtn" onclick="syncStrava(this)" style="margin-left:1em; display:none; padding:0.4em 1em; background:#27ae60; color:#fff; border:none; border-radius:4px; cursor:pointer;">🔄 Odśwież ze Stravy</button>
     <table id="activitiesTable" style="display:none;">
         <thead>
             <tr>
@@ -66,6 +68,7 @@
             if (res.ok) {
                 currentUser = await res.json();
                 document.getElementById('stravaLoginBtn').style.display = 'none';
+                document.getElementById('syncBtn').style.display = '';
                 document.getElementById('userInfo').textContent = '👤 ' + currentUser.name;
                 document.getElementById('logoutBtn').style.display = '';
                 loadActivities();
@@ -78,8 +81,51 @@
     }
 
     initAuth();
+    loadUptime();
     // Obsługa przycisku "Więcej..." - nie używamy paginacji Strava API, dane z bazy
     document.getElementById('loadMoreBtn').style.display = 'none';
+
+    // Ręczne dociągnięcie nowych aktywności ze Stravy (sync działa w tle na serwerze)
+    async function syncStrava(btn) {
+        btn.disabled = true;
+        btn.textContent = 'Synchronizuję...';
+        try {
+            const res = await fetch('/api/activities/sync', { method: 'POST' });
+            if (res.ok) {
+                // Sync działa w tle - daj mu chwilę i przeładuj listę
+                await new Promise(r => setTimeout(r, 3000));
+                await loadActivities();
+            } else {
+                const err = await res.json().catch(() => ({}));
+                alert('Błąd synchronizacji: ' + (err.error || res.status));
+            }
+        } catch (e) {
+            alert('Błąd połączenia z serwerem');
+        }
+        btn.disabled = false;
+        btn.textContent = '🔄 Odśwież ze Stravy';
+    }
+
+    // Czas działania backendu (endpoint /api/uptime) - m.in. podgląd usypiania na serwerze
+    function fmtUptime(s) {
+        const d = Math.floor(s / 86400);
+        const h = Math.floor((s % 86400) / 3600);
+        const m = Math.floor((s % 3600) / 60);
+        if (d > 0) return `${d} d ${h} h`;
+        if (h > 0) return `${h} h ${m} min`;
+        return `${m} min`;
+    }
+
+    async function loadUptime() {
+        try {
+            const res = await fetch('/api/uptime');
+            if (!res.ok) return;
+            const data = await res.json();
+            const el = document.getElementById('uptimeInfo');
+            el.textContent = `⏱ ${fmtUptime(data.uptimeSeconds)}`;
+            el.title = 'Aplikacja działa od: ' + new Date(data.startedAtUtc).toLocaleString('pl-PL');
+        } catch (e) { /* backend niedostępny - pomiń */ }
+    }
 
     async function loadActivities() {
         document.getElementById('activitiesTable').style.display = '';

@@ -117,6 +117,21 @@ public class ActivitiesController : ControllerBase
     }
 
     /// <summary>
+    /// Ręcznie dociąga nowe aktywności ze Stravy (sync w tle; token odświeżany automatycznie)
+    /// </summary>
+    [HttpPost("sync")]
+    public async Task<IActionResult> Sync()
+    {
+        var userId = GetUserId();
+        var user = await _db.Users.FindAsync(userId);
+        if (user?.EncryptedAccessToken == null)
+            return BadRequest(new { error = "Brak tokenu Strava - zaloguj się ponownie przez Stravę" });
+
+        _syncService.TriggerSync(userId, user.StravaAthleteId, !user.IsFirstSyncComplete);
+        return Ok(new { success = true });
+    }
+
+    /// <summary>
     /// Pobiera stream i GPX on-demand dla aktywności (używa serwisu sync)
     /// </summary>
     [HttpPost("{activityId}/download-stream")]
