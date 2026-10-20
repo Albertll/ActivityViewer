@@ -21,19 +21,22 @@ public class StravaController : ControllerBase
     private readonly AppDbContext _db;
     private readonly EncryptionService _encryption;
     private readonly StravaActivitySyncService _syncService;
+    private readonly ILogger<StravaController> _logger;
 
     public StravaController(
         IHttpClientFactory httpClientFactory,
         IConfiguration configuration,
         AppDbContext db,
         EncryptionService encryption,
-        StravaActivitySyncService syncService)
+        StravaActivitySyncService syncService,
+        ILogger<StravaController> logger)
     {
         _httpClientFactory = httpClientFactory;
         _configuration = configuration;
         _db = db;
         _encryption = encryption;
         _syncService = syncService;
+        _logger = logger;
     }
 
     /// <summary>
@@ -75,6 +78,23 @@ public class StravaController : ControllerBase
         if (string.IsNullOrEmpty(expectedState) || state != expectedState)
             return BadRequest("Nieprawidłowy state OAuth - rozpocznij logowanie od /auth/login");
 
+        // Bez logów serwera (darmowy hosting) jedynym źródłem diagnozy jest odpowiedź - przy błędzie
+        // pokazujemy etap i typy wyjątków (bez treści komunikatów, które mogą zawierać ścieżki i nazwy baz)
+        var stage = "wymiana kodu na token w Stravie";
+        try
+        {
+            return await CompleteLoginAsync(code, stageName => stage = stageName);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "[Auth] Logowanie nieudane na etapie: {Stage}", stage);
+            return StatusCode(500,
+                $"Logowanie nie powiodło się (etap: {stage}; {DescribeException(ex)}). Spróbuj ponownie: /auth/login");
+        }
+    }
+
+    private async Task<IActionResult> CompleteLoginAsync(string code, Action<string> setStage)
+    {
         var clientId = _configuration["Strava:ClientId"];
         var clientSecret = _configuration["Strava:ClientSecret"];
 
@@ -120,6 +140,7 @@ public class StravaController : ControllerBase
             expiresAt = expEl.GetInt64();
 
         // Znajdź lub utwórz użytkownika
+        setStage("zapis użytkownika w bazie");
         var user = await _db.Users.FirstOrDefaultAsync(u => u.StravaAthleteId == athleteId);
         bool isFirstLogin = false;
         if (user == null)
@@ -148,6 +169,7 @@ public class StravaController : ControllerBase
         await _db.SaveChangesAsync();
 
         // Zaloguj użytkownika (cookie)
+        setStage("utworzenie sesji (cookie, klucze Data Protection)");
         var claims = new List<Claim>
         {
             new(ClaimTypes.NameIdentifier, user.Id.ToString()),
@@ -164,6 +186,26 @@ public class StravaController : ControllerBase
         _syncService.TriggerSync(user.Id, athleteId, isFirstLogin);
 
         return Redirect("/intervals.html");
+    }
+
+    /// <summary>
+    /// Opis wyjątku do komunikatu dla użytkownika: same typy z łańcucha InnerException plus kody
+    /// (numer błędu SQL, kod gniazda, HResult kryptografii) - bez treści komunikatów.
+    /// </summary>
+    internal static string DescribeException(Exception ex)
+    {
+        var parts = new List<string>();
+        for (var e = ex; e != null && parts.Count < 4; e = e.InnerException)
+        {
+            parts.Add(e switch
+            {
+                Microsoft.Data.SqlClient.SqlException sql => $"SqlException #{sql.Number}",
+                System.Net.Sockets.SocketException sock => $"SocketException {sock.SocketErrorCode}",
+                CryptographicException crypto => $"CryptographicException 0x{crypto.HResult:X8}",
+                _ => e.GetType().Name
+            });
+        }
+        return string.Join(" <- ", parts);
     }
 
     /// <summary>

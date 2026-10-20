@@ -2,7 +2,9 @@ using GpxApi.Data;
 using GpxApi.Services;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.DataProtection;
+using Microsoft.AspNetCore.StaticFiles;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.FileProviders;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -13,14 +15,12 @@ builder.Services.AddSwaggerGen();
 builder.Services.AddHttpClient();
 
 // --- Data Protection (klucze szyfrowania cookie przetrwają restart aplikacji) ---
-var dpBuilder = builder.Services.AddDataProtection()
+// Bez ProtectKeysWithDpapi: na hostingu (IIS bez załadowanego profilu użytkownika) DPAPI rzuca
+// CryptographicException przy tworzeniu nowego klucza, więc po wygaśnięciu klucza (90 dni) logowanie
+// kończyło się błędem 500. Klucze leżą w dp-keys/ poza zasięgiem serwowanych statyk.
+builder.Services.AddDataProtection()
     .PersistKeysToFileSystem(new DirectoryInfo(Path.Combine(builder.Environment.ContentRootPath, "..", "dp-keys")))
     .SetApplicationName("GpxApp");
-
-if (OperatingSystem.IsWindows())
-{
-    dpBuilder.ProtectKeysWithDpapi();
-}
 
 // --- Baza danych ---
 builder.Services.AddDbContext<AppDbContext>(options =>
@@ -71,13 +71,27 @@ using (var scope = app.Services.CreateScope())
     db.Database.Migrate();
 }
 
-// Serve static files from wwwroot or parent directory (frontend)
+// Frontend: statyki z katalogu nadrzędnego (lokalnie korzeń repo, na serwerze korzeń FTP), ale WYŁĄCZNIE
+// pliki leżące bezpośrednio w nim i tylko o rozszerzeniach frontendu. Obok leżą wwwroot/ z appsettings.json
+// (sekrety), dp-keys/ i inne katalogi - nie wolno ich wystawić.
+var frontendContentTypes = new FileExtensionContentTypeProvider();
+frontendContentTypes.Mappings.Clear();
+frontendContentTypes.Mappings[".html"] = "text/html";
+frontendContentTypes.Mappings[".js"] = "text/javascript";
+frontendContentTypes.Mappings[".css"] = "text/css";
+frontendContentTypes.Mappings[".ico"] = "image/x-icon";
+frontendContentTypes.Mappings[".png"] = "image/png";
+frontendContentTypes.Mappings[".svg"] = "image/svg+xml";
+
 app.UseDefaultFiles();
-app.UseStaticFiles(new StaticFileOptions {
-    FileProvider = new Microsoft.Extensions.FileProviders.PhysicalFileProvider(
-        Path.Combine(Directory.GetCurrentDirectory(), "..")),
-    RequestPath = ""
-});
+app.UseWhen(
+    ctx => ctx.Request.Path.HasValue && ctx.Request.Path.Value!.LastIndexOfAny(['/', '\\']) == 0,
+    branch => branch.UseStaticFiles(new StaticFileOptions
+    {
+        FileProvider = new PhysicalFileProvider(Path.Combine(Directory.GetCurrentDirectory(), "..")),
+        ContentTypeProvider = frontendContentTypes,
+        ServeUnknownFileTypes = false
+    }));
 
 if (app.Environment.IsDevelopment())
 {
